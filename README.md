@@ -41,39 +41,6 @@ Parsing a file using the generated index
 cd $PRJECT_ROOT
 ./builddir/test_mim_parser <nthreads> <fastq_file> <index_file> [<fastq_file2>] [<index_file2>]
 ```
-
-## Commands to compile various benchmarks
-
-1. FQFeeder
-```unix
-cd $PRJECT_ROOT
-make fqfeeder
-./fqfeeder.out /path/to/compressed-fastq-file <num_consumer_threads> <num_parsing_threads>
-```
-
-2. ../Scripts/CountBases.cpp
-```unix
-cd $PROJECT_ROOT
-make baseline
-./countbases.out /path/to/compressed-fastq-file
-```
-
-## Generating test data
-```
-mkdir test-data
-cd test-data
-
-# 1.5 MB compressed
-wget https://raw.githubusercontent.com/umd-cmsc701/project_0_test_data/main/test_input/salmonella.fa
-gzip salmonella.fa
-
-# 28 MB compressed
-wget https://www.be-md.ncbi.nlm.nih.gov/Traces/sra-reads-be/fastq?acc=SRR28596297 -O ecoli.fq.gzip
-
-# 595 MB compressed
-wget https://www.be-md.ncbi.nlm.nih.gov/Traces/sra-reads-be/fastq?acc=SRR28592514 -O nematode.fq.gzip
-```
-
 ## About zran.c
 
 (From https://github.com/madler/zlib/blob/master/examples/)
