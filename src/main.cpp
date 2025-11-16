@@ -3,7 +3,7 @@
 #include "kseqcharstream.hpp"
 #include <chrono>
 #include <iostream>
-#include <zran.hpp>
+#include "zran.hpp"
 using namespace std;
 using namespace klibpp;
 

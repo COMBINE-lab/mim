@@ -1,26 +1,39 @@
 # `mim` : A small auxiliary index (and parser) to massively speed up parallel parsing of gzipped FASTQ/A files
 
+## Building 
+
+```
+# Setup build directory
+meson setup builddir
+
+# Or with custom options
+meson setup builddir -Doptimization=3 -Ddebug=true
+
+# Build all targets
+meson compile -C builddir
+
+# Or use the shorter ninja command
+ninja -C builddir
+
+# Install (installs mimindex and offsets)
+meson install -C builddir
+
+# Clean
+rm -rf builddir
+```
+
 ## Running this project
 
-
-Generate index file using distance between access points as 524288 bytes 
+Generate index file using distance between access points as 32,000,000 bytes 
 ```
 cd $PRJECT_ROOT
-make main
-./main.out build /path/to/compressed-fastq-file 524288
+./builddir/mimindex build /path/to/compressed-fastq-file 32000000
 ```
 
-Get 10000 records starting from index 0
-
-```
-./main.out use /path/to/compressed-fastq-file /path/to/index-file 0 10000
-```
-
-Running our benchmark
+Parsing a file using the generated index
 ```
 cd $PRJECT_ROOT
-make test_parser
-./test_parser.out <fastq_file> <index_file> <num_consumer_threads> <num_producer_threads>
+./builddir/test_mim_parser <nthreads> <fastq_file> <index_file> [<fastq_file2>] [<index_file2>]
 ```
 
 ## Commands to compile various benchmarks
@@ -37,18 +50,6 @@ make fqfeeder
 cd $PROJECT_ROOT
 make baseline
 ./countbases.out /path/to/compressed-fastq-file
-```
-
-## Installing zlib
-```
-git clone git@github.com:madler/zlib.git
-cd zlib
-
-./configure
-make test
-
-# if the above succeeds
-make install
 ```
 
 ## Generating test data

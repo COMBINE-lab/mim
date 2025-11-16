@@ -35,6 +35,8 @@
  * Rob Patro <rob@cs.umd.edu>
  */
 
+#ifndef ZRAN_HPP
+#define ZRAN_HPP
 #include "kseq++/seqio.hpp"
 #include <chrono>
 #include <climits>
@@ -1128,3 +1130,6 @@ std::pair<unsigned char *, int> read_index(const char *gzFile1,
   fprintf(stderr, "zran: read index with %d access points!\n", len);
   return read_index(gzFile1, index, record_idx, num_record_chunks);
 }
+
+#endif //ZRAN_HPP
+

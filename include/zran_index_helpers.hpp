@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <zlib.h>
-//#include "zran.hpp"
+#include "zran.hpp"
 
 // RAII wrapper for z_stream
 class ZStream {
