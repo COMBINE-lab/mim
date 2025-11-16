@@ -49,6 +49,7 @@
 #include <stdexcept>
 #include <utility>
 #include <zlib.h>
+#include "blake3.h"
 
 using namespace std;
 
@@ -92,6 +93,7 @@ struct deflate_index {
       *record_boundaries;  // stores bytes offsets of records in FASTQ file
   off_t num_record_chunks; // number of records in FASTQ file
   off_t total_record_count;
+  uint8_t compressed_hash[BLAKE3_OUT_LEN];
 
   deflate_index() {
     have = -1;
@@ -100,6 +102,7 @@ struct deflate_index {
     list = nullptr;
     num_record_chunks = 0;
     total_record_count = 0;
+    memset(compressed_hash, 0, BLAKE3_OUT_LEN);
   }
 
   // Copy constructor - Shallow copy
@@ -112,6 +115,7 @@ struct deflate_index {
     record_boundaries = other.record_boundaries;
     num_record_chunks = other.num_record_chunks;
     total_record_count = other.total_record_count;
+    memcpy(compressed_hash, other.compressed_hash, BLAKE3_OUT_LEN);
   }
 };
 
@@ -169,9 +173,10 @@ inline int deflate_index_save(FILE *out, struct deflate_index *index) {
   if (fwrite(&index->mode, sizeof(index->mode), 1, out) != 1 ||
       fwrite(&index->length, sizeof(index->length), 1, out) != 1 ||
       fwrite(&index->have, sizeof(index->have), 1, out) != 1 ||
-      fwrite(&index->num_record_chunks, sizeof(index->num_record_chunks), 1,
-             out) != 1)
+      fwrite(&index->num_record_chunks, sizeof(index->num_record_chunks), 1, out) != 1 ||
+      fwrite(&index->compressed_hash, BLAKE3_OUT_LEN, 1, out) != 1) {
     return Z_ERRNO;
+  }
 
   // Write access points
   for (int i = 0; i < index->have; i++) {
@@ -209,16 +214,17 @@ inline int deflate_index_save_gzip(gzFile out, struct deflate_index *index) {
   index_size += sizeof(index->have);
   index_size += sizeof(index->length);
   index_size += sizeof(index->num_record_chunks);
+  index_size += BLAKE3_OUT_LEN;
 
   auto start = std::chrono::high_resolution_clock::now();
   if (gzwrite(out, &index->mode, sizeof(index->mode)) != sizeof(index->mode) ||
       gzwrite(out, &index->have, sizeof(index->have)) != sizeof(index->have) ||
       gzwrite(out, &index->length, sizeof(index->length)) !=
           sizeof(index->length) ||
-      gzwrite(out, &index->num_record_chunks,
-              sizeof(index->num_record_chunks)) !=
-          sizeof(index->num_record_chunks))
+      gzwrite(out, &index->num_record_chunks, sizeof(index->num_record_chunks)) != sizeof(index->num_record_chunks) ||
+      gzwrite(out, &index->compressed_hash, BLAKE3_OUT_LEN) != BLAKE3_OUT_LEN) {
     return Z_ERRNO;
+  }
 
   // Write access points
   for (int i = 0; i < index->have; i++) {
@@ -283,7 +289,8 @@ inline int deflate_index_load(FILE *in, struct deflate_index **built) {
       fread(&index->length, sizeof(index->length), 1, in) != 1 ||
       fread(&index->have, sizeof(index->have), 1, in) != 1 ||
       fread(&index->num_record_chunks, sizeof(index->num_record_chunks), 1,
-            in) != 1) {
+            in) != 1 || 
+      fread(&index->compressed_hash, BLAKE3_OUT_LEN, 1, in) != 1) {
     free(index);
     return Z_ERRNO;
   }
@@ -363,8 +370,10 @@ inline int deflate_index_load_gzip(gzFile in, struct deflate_index **built) {
       gzread(in, &index->length, sizeof(index->length)) !=
           sizeof(index->length) ||
       gzread(in, &index->num_record_chunks, sizeof(index->num_record_chunks)) !=
-          sizeof(index->num_record_chunks))
+          sizeof(index->num_record_chunks) ||
+      gzread(in, &index->compressed_hash, BLAKE3_OUT_LEN) != BLAKE3_OUT_LEN) {
     return Z_ERRNO;
+  }
 
   // Read access points
   index->list = new std::vector<point_t>(index->have);
@@ -496,6 +505,8 @@ static struct deflate_index *add_point(struct deflate_index *index, off_t in,
 
 inline int deflate_index_build(FILE *in, off_t span,
                                struct deflate_index **built) {
+  blake3_hasher hasher;
+  blake3_hasher_init(&hasher);
   // If this returns with an error, any attempt to use the index will cleanly
   // return an error.
   *built = nullptr;
@@ -533,6 +544,7 @@ inline int deflate_index_build(FILE *in, off_t span,
         ret = Z_ERRNO;
         break;
       }
+      blake3_hasher_update(&hasher, index->strm.next_in, index->strm.avail_in);
 
       if (mode == 0) {
         // At the start of the input -- determine the type. Assume raw
@@ -615,9 +627,18 @@ inline int deflate_index_build(FILE *in, off_t span,
     return ret == Z_NEED_DICT ? Z_DATA_ERROR : ret;
   }
 
+  uint8_t output[BLAKE3_OUT_LEN];
+  blake3_hasher_finalize(&hasher, output, BLAKE3_OUT_LEN);
+  std::cout << "BLAKE 3 checkum \n";
+    // Print the hash as hexadecimal.
+  for (size_t i = 0; i < BLAKE3_OUT_LEN; i++) {
+    printf("%02x", output[i]);
+  }
+  printf("\n");
   // Return the index.
   index->mode = mode;
   index->length = totout;
+  std::memcpy(index->compressed_hash, output, BLAKE3_OUT_LEN);
   *built = index;
   return index->have;
 }
@@ -987,7 +1008,7 @@ inline void build_index(const char *gzFile1, off_t span) {
 
   // Save index to file
   std::string filename_gzip(gzFile1);
-  filename_gzip += ".index.gzip";
+  filename_gzip += ".mim";
   fprintf(stderr, "zran: attempting to write index to %s\n", filename_gzip.c_str());
   gzFile idx_gzip = gzopen(filename_gzip.c_str(), "wb");
 

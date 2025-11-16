@@ -101,6 +101,11 @@ int ParrFQParser<ReadChunkT>::start() {
 
   if constexpr (std::is_same_v<ReadChunkT, ReadPairChunk>) {
     int ret = loadIndex(m_indexFileName2, m_index2);
+    if (m_index->total_record_count != m_index2->total_record_count) {
+      std::cerr << "The indexed total record count of file 1: " << m_index->total_record_count 
+                << " does not match that of file 2: " << m_index2->total_record_count << ", cannot proceed.\n";
+      return -1;
+    }
     if (ret != 0) return ret;
   }
 
@@ -150,6 +155,12 @@ int ParrFQParser<ReadChunkT>::loadIndex(const std::string& indexFileName,
     fprintf(stderr, "Could not load index %d\n", len);
     return -1;
   }
+  fprintf(stderr, "BLAKE3 hash: ");
+  // Print the hash as hexadecimal.
+  for (size_t i = 0; i < BLAKE3_OUT_LEN; i++) {
+    fprintf(stderr, "%02x", index->compressed_hash[i]);
+  }
+  fprintf(stderr, "\n");
   idx_ptr.reset(index);
   return 0;
 }

@@ -230,14 +230,17 @@ int main(int argc, char* argv[]) {
   auto start = std::chrono::high_resolution_clock::now();
   size_t ctr = 0;
   Bases b;
+  std::string read_desc;
   if (fastqFile2.size() == 0) {
     b = do_count_single_end(fastqFile, indexFile, nt, ctr);
+    read_desc = "reads";
   } else {
     b = do_count_paired_end(fastqFile, indexFile, fastqFile2, indexFile2, nt, ctr);
+    read_desc = "read pairs";
   }
 
   std::cerr << "\n";
-  std::cerr << "Parsed " << ctr << " total read pairs.\n";
+  std::cerr << "Parsed " << ctr << " total " << read_desc << ".\n";
   std::cerr << "\n#A = " << b.A << '\n';
   std::cerr << "#C = " << b.C << '\n';
   std::cerr << "#G = " << b.G << '\n';
