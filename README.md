@@ -1,6 +1,6 @@
 # `mim` : A small auxiliary index (and parser) to massively speed up parallel parsing of gzipped FASTQ/A files
 
-![Mímir](https://raw.githubusercontent.com/COMBINE-lab/mim/refs/heads/main/assets/mim.png)
+<img src="https://raw.githubusercontent.com/COMBINE-lab/mim/refs/heads/main/assets/mim.png" width=50% height=50%>
 
 Why `mim`? The project's name is a reference to the Norse figure [Mímir](https://en.wikipedia.org/wiki/M%C3%ADmir), who is:
 
