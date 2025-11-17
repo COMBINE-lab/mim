@@ -148,21 +148,19 @@ std::unique_ptr<GzipStreamReader> open_gzip_at_checkpoint(
     }
     reader->file_offset = checkpoint->in - (checkpoint->bits ? 1 : 0);
     
-    // Initialize the inflate stream
-    // Use raw deflate mode (negative window bits)
-    //int windowBits = index->gzip ? 47 : -15;  // 47 = 32 + 15 for gzip, -15 for raw deflate
-    int windowBits = RAW;  
+   // When starting from a checkpoint (not at the beginning), we must use raw deflate
+    // because there's no gzip header at the checkpoint position
+    int windowBits = -15;
     reader->zstream.init(windowBits);
-  
+    
     z_stream* strm = reader->zstream.get();
-
+    
     // Set the decompression dictionary (the 32KB window from the checkpoint)
     if (checkpoint->out > 0) {
-        //(&index->strm, curr_point->window, curr_point->dict);
-        reader->zstream.setDictionary(checkpoint->window, checkpoint->dict);
+        reader->zstream.setDictionary(checkpoint->window, 32768);
     }
-  
-       // Handle bit-level alignment
+
+    // Handle bit-level alignment
     if (checkpoint->bits) {
         // We're starting mid-byte. Read that byte and prime the bit buffer.
         unsigned char last_byte;
@@ -198,6 +196,117 @@ std::unique_ptr<GzipStreamReader> open_gzip_at_checkpoint(
     return reader;
 }
 
+
+/**
+ * Skip gzip header and trailer to get to the next gzip member.
+ * Returns 0 on success, -1 on error.
+ */
+static int skip_gzip_header(z_stream* strm, FILE* file, unsigned char* input_buffer, size_t buffer_size) {
+    // After Z_STREAM_END, we need to skip:
+    // 1. The 8-byte gzip trailer (CRC32 + ISIZE)
+    // 2. The next gzip header (10+ bytes)
+    
+    // The trailer might already be in strm->next_in
+    // We need to consume it and then read/skip the next header
+    
+    // First, discard the trailer (8 bytes) if present in current buffer
+    if (strm->avail_in >= 8) {
+        strm->next_in += 8;
+        strm->avail_in -= 8;
+    } else {
+        // Need to read more to skip trailer
+        size_t to_skip = 8 - strm->avail_in;
+        strm->avail_in = 0;
+        
+        // Read and discard bytes
+        unsigned char discard[8];
+        if (fread(discard, 1, to_skip, file) != to_skip) {
+            return -1;  // EOF or error
+        }
+    }
+    
+    // Now skip the gzip header
+    // Minimum gzip header is 10 bytes, but can be longer with optional fields
+    
+    // Read header into buffer if needed
+    if (strm->avail_in == 0) {
+        size_t bytes_read = fread(input_buffer, 1, buffer_size, file);
+        if (bytes_read == 0) {
+            return -1;  // No more data
+        }
+        strm->avail_in = bytes_read;
+        strm->next_in = input_buffer;
+    }
+    
+    // Parse gzip header
+    if (strm->avail_in < 10) {
+        return -1;  // Not enough data for header
+    }
+    
+    unsigned char* header = strm->next_in;
+    
+    // Check magic number
+    if (header[0] != 0x1f || header[1] != 0x8b) {
+        return -1;  // Not a gzip header
+    }
+    
+    // Check compression method (should be 8 for DEFLATE)
+    if (header[2] != 8) {
+        return -1;  // Unsupported compression
+    }
+    
+    unsigned char flags = header[3];
+    size_t header_len = 10;
+    
+    // Skip fixed header
+    strm->next_in += 10;
+    strm->avail_in -= 10;
+    
+    // Skip optional fields based on flags
+    // FEXTRA
+    if (flags & 0x04) {
+        if (strm->avail_in < 2) return -1;
+        size_t extra_len = strm->next_in[0] | (strm->next_in[1] << 8);
+        strm->next_in += 2;
+        strm->avail_in -= 2;
+        
+        if (strm->avail_in < extra_len) return -1;
+        strm->next_in += extra_len;
+        strm->avail_in -= extra_len;
+    }
+    
+    // FNAME - skip null-terminated filename
+    if (flags & 0x08) {
+        while (strm->avail_in > 0 && *strm->next_in != 0) {
+            strm->next_in++;
+            strm->avail_in--;
+        }
+        if (strm->avail_in == 0) return -1;
+        strm->next_in++;  // Skip the null terminator
+        strm->avail_in--;
+    }
+    
+    // FCOMMENT - skip null-terminated comment
+    if (flags & 0x10) {
+        while (strm->avail_in > 0 && *strm->next_in != 0) {
+            strm->next_in++;
+            strm->avail_in--;
+        }
+        if (strm->avail_in == 0) return -1;
+        strm->next_in++;  // Skip the null terminator
+        strm->avail_in--;
+    }
+    
+    // FHCRC - skip 2-byte header CRC
+    if (flags & 0x02) {
+        if (strm->avail_in < 2) return -1;
+        strm->next_in += 2;
+        strm->avail_in -= 2;
+    }
+    
+    return 0;  // Success
+}
+
 /**
  * Read decompressed data from the stream.
  * Returns number of bytes read (0 = EOF, negative = error)
@@ -222,6 +331,7 @@ ptrdiff_t gzip_read(GzipStreamReader* reader, char* buffer, size_t len) {
                     // End of compressed data
                     break;
                 } else {
+                    fprintf(stderr, "File read error\n");
                     return -1;
                 }
             }
@@ -235,8 +345,31 @@ ptrdiff_t gzip_read(GzipStreamReader* reader, char* buffer, size_t len) {
         int ret = inflate(strm, Z_NO_FLUSH);
         
         if (ret == Z_STREAM_END) {
-            // Finished decompressing this stream
-            break;
+            // Reached end of a gzip member (stream)
+            // For multi-stream gzip files, we need to reset and continue
+            
+            // Check if there's more data to read
+            if (strm->avail_in > 0 || !feof(reader->file)) {
+                // Skip the gzip trailer and next header
+                if (skip_gzip_header(strm, reader->file, reader->input_buffer, sizeof(reader->input_buffer)) != 0) {
+                    // No more gzip members, we're done
+                    break;
+                }
+                
+                // Reset inflate to start processing the next member's deflate stream
+                // Use inflateReset (not inflateReset2) to keep raw deflate mode
+                ret = inflateReset(strm);
+                if (ret != Z_OK) {
+                    fprintf(stderr, "inflateReset() failed: %d\n", ret);
+                    return -1;
+                }
+                
+                // Continue decompressing from the next member
+                continue;
+            } else {
+                // Truly at the end of the file
+                break;
+            }
         } else if (ret == Z_OK) {
             // Successfully decompressed some data, continue
             continue;
@@ -246,6 +379,8 @@ ptrdiff_t gzip_read(GzipStreamReader* reader, char* buffer, size_t len) {
             continue;
         } else {
             // Error occurred
+            fprintf(stderr, "inflate() error: %d (%s)\n", ret, 
+                    strm->msg ? strm->msg : "no message");
             if (ret == Z_NEED_DICT) {
                 fprintf(stderr, "Z_NEED_DICT - dictionary not set properly\n");
             } else if (ret == Z_DATA_ERROR) {
@@ -259,8 +394,10 @@ ptrdiff_t gzip_read(GzipStreamReader* reader, char* buffer, size_t len) {
     
     size_t bytes_produced = len - strm->avail_out;
     reader->uncompressed_offset += bytes_produced;
+    
     return bytes_produced;
 }
+
 
 #endif //ZRAN_INDEX_HELPERS_HPP
 

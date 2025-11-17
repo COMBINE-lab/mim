@@ -57,7 +57,6 @@ class KseqCharStreamIn : public klibpp::KStreamIn<CharBuffer, int(*)(CharBuffer&
 
 // Custom stream reader for reading from a character buffer instead of a file
 class KseqIndexedGzipStreamIn : public klibpp::KStreamIn<GzipStreamReader*, ptrdiff_t(*)(GzipStreamReader*, char*, size_t)> {
-  GzipStreamReader* reader{nullptr}; // we don't own
  public:
   using Base = klibpp::KStreamIn<GzipStreamReader*, ptrdiff_t(*)(GzipStreamReader*, char*, size_t)>;
 

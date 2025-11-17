@@ -162,7 +162,7 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
       klibpp::KSeq seq;
       uint64_t cur_rec{0};
       while (*rg >> seq) { 
-        if (cur_rec > 0 && cur_rec % 1000 == 0) { bar.tick(); }
+        if (cur_rec % 1000 == 0) { bar.tick(); }
         //std::cerr << "rec : " << j << " / " << expected_rec << "\n";
         ++cur_rec;
         for (size_t j = 0; j < seq.seq.length(); ++j) {
@@ -185,7 +185,7 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
           }
         }
       }
-
+      std::cerr << "thread " << i << " parsed " << cur_rec << " reads\n";
       ctr += cur_rec; 
       cur_rec = 0;
       return 0;
