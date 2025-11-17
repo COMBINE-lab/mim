@@ -32,7 +32,7 @@ Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::s
     option::Lead{"█"},
     option::Remainder{"-"},
     option::End{"]"},
-    option::MaxProgress{parser.get_num_reads() / 1000},
+    option::MaxProgress{parser.get_num_reads() / 100000},
     option::ForegroundColor{Color::yellow},
     option::ShowElapsedTime{true},
     option::ShowRemainingTime{true},
@@ -53,7 +53,7 @@ Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::s
       ReadPair seq;
       uint64_t cur_rec{0};
       while (*rg >> seq) { 
-        if (cur_rec % 1000 == 0) { bar.tick(); }
+        if (cur_rec % 100000 == 0) { bar.tick(); }
         ++cur_rec;
         for (size_t j = 0; j < seq.first.seq.length(); ++j) {
           char c = seq.first.seq[j];
@@ -96,7 +96,6 @@ Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::s
       }
 
       ctr += cur_rec; 
-      cur_rec = 0;
       return 0;
     });
   }
@@ -130,69 +129,73 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
 
   using namespace indicators;
 
+  std::cerr << "NUMBER OF READS " << parser.get_num_reads() << "\n";
   // Hide cursor
   show_console_cursor(false);
 
-  indicators::ProgressBar bar{
-    option::BarWidth{50},
-    option::Start{" ["},
-    option::Fill{"█"},
-    option::Lead{"█"},
-    option::Remainder{"-"},
-    option::End{"]"},
-    option::MaxProgress{parser.get_num_reads() / 1000},
-    option::ForegroundColor{Color::yellow},
-    option::ShowElapsedTime{true},
-    option::ShowRemainingTime{true},
-    option::FontStyles{std::vector<FontStyle>{FontStyle::bold}}
-  };
+  
 
-  std::cerr << "NUMBER OF READS " << parser.get_num_reads() << "\n";
-
-  std::vector<std::thread> readers;
   std::vector<Bases> counters(nt, {0, 0, 0, 0});
   std::atomic<size_t> ctr{0};
-  for (size_t i = 0; i < nt; ++i) {
-    readers.emplace_back([&, i]() {
-      auto rg = parser.get_read_chunk();
-      if (!rg) {
-        return 1;
-      }
-      klibpp::KSeq seq;
-      uint64_t cur_rec{0};
-      while (*rg >> seq) { 
-        if (cur_rec % 1000 == 0) { bar.tick(); }
-        ++cur_rec;
-        for (size_t j = 0; j < seq.seq.length(); ++j) {
-          char c = seq.seq[j];
-          switch (c) {
-            case 'A':
-              counters[i].A++;
-              break;
-            case 'C':
-              counters[i].C++;
-              break;
-            case 'G':
-              counters[i].G++;
-              break;
-            case 'T':
-              counters[i].T++;
-              break;
-            default:
-              break;
+  {
+    indicators::ProgressBar bar{
+      option::BarWidth{50},
+      option::Start{" ["},
+      option::Fill{"█"},
+      option::Lead{"█"},
+      option::Remainder{"-"},
+      option::End{"]"},
+      option::MaxProgress{parser.get_num_reads() / 100000},
+      option::ForegroundColor{Color::yellow},
+      option::ShowElapsedTime{true},
+      option::ShowRemainingTime{true},
+      option::FontStyles{std::vector<FontStyle>{FontStyle::bold}}
+    };
+
+    indicators::ProgressBar* bar_ptr = &bar; 
+    std::vector<std::thread> readers;
+    readers.reserve(nt);
+    for (size_t i = 0; i < nt; ++i) {
+      readers.emplace_back([&, i]() {
+        auto rg = parser.get_read_chunk();
+        if (!rg) {
+          return 1;
+        }
+        klibpp::KSeq seq;
+        uint64_t cur_rec{0};
+        while (*rg >> seq) { 
+          if (cur_rec % 100000 == 0) { bar_ptr->tick(); }
+          ++cur_rec;
+          for (size_t j = 0; j < seq.seq.length(); ++j) {
+            char c = seq.seq[j];
+            switch (c) {
+              case 'A':
+                counters[i].A++;
+                break;
+              case 'C':
+                counters[i].C++;
+                break;
+              case 'G':
+                counters[i].G++;
+                break;
+              case 'T':
+                counters[i].T++;
+                break;
+              default:
+                break;
+            }
           }
         }
-      }
-      ctr += cur_rec; 
-      cur_rec = 0;
-      return 0;
-    });
-  }
+        ctr += cur_rec; 
+        return 0;
+      });
+    }
 
-  for (auto& t : readers) {
-    t.join();
+    for (auto& t : readers) {
+      t.join();
+    }
+    bar.mark_as_completed();
   }
-  bar.mark_as_completed();
   parser.stop();
   // Show cursor
   indicators::show_console_cursor(true);
