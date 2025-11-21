@@ -8,7 +8,10 @@
 using namespace std;
 
 struct Bases {
-  uint64_t A, C, G, T;
+  alignas(64) uint64_t A;
+  uint64_t C;
+  uint64_t G;
+  uint64_t T;
 };
 
 Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::string& fastqFile2, std::string& indexFile2, size_t nt, size_t& ctr_out) {
@@ -46,13 +49,14 @@ Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::s
   std::atomic<size_t> ctr{0};
   for (size_t i = 0; i < nt; ++i) {
     readers.emplace_back([&, i]() {
-      auto rg = parser.get_read_chunk();
-      if (!rg) {
+      auto rgo = parser.get_read_chunk();
+      if (!rgo) {
         return 1;
       }
+      auto rg = std::move(rgo.value());
       ReadPair seq;
       uint64_t cur_rec{0};
-      while (*rg >> seq) { 
+      while (rg >> seq) { 
         if (cur_rec % 100000 == 0) { bar.tick(); }
         ++cur_rec;
         for (size_t j = 0; j < seq.first.seq.length(); ++j) {
@@ -157,13 +161,14 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
     readers.reserve(nt);
     for (size_t i = 0; i < nt; ++i) {
       readers.emplace_back([&, i]() {
-        auto rg = parser.get_read_chunk();
-        if (!rg) {
+        auto rgo = parser.get_read_chunk();
+        if (!rgo) {
           return 1;
         }
+        auto rg = std::move(rgo.value());
         klibpp::KSeq seq;
         uint64_t cur_rec{0};
-        while (*rg >> seq) { 
+        while (rg >> seq) { 
           if (cur_rec % 100000 == 0) { bar_ptr->tick(); }
           ++cur_rec;
           for (size_t j = 0; j < seq.seq.length(); ++j) {

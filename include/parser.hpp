@@ -54,7 +54,7 @@ public:
     in_stream_.reset(new KseqIndexedGzipStreamIn(reader_.get()));
   }
  
-  ReadChunk(ReadChunk&& other) = delete;
+  ReadChunk(ReadChunk&& other) = default;
   ReadChunk(const ReadChunk& other) = delete;
   ReadChunk& operator=(const ReadChunk& other) = delete;
   ReadChunk& operator=(ReadChunk&& other) = delete;
@@ -165,7 +165,7 @@ public:
     // now the streams should be synced
   }
  
-  ReadPairChunk(ReadPairChunk&& other) = delete;
+  ReadPairChunk(ReadPairChunk&& other) = default;
   ReadPairChunk(const ReadPairChunk& other) = delete;
   ReadPairChunk& operator=(const ReadPairChunk& other) = delete;
   ReadPairChunk& operator=(ReadPairChunk&& other) = delete;

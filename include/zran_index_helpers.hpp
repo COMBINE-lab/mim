@@ -382,7 +382,7 @@ static int skip_gzip_header(z_stream* strm, FILE* file, unsigned char* input_buf
  * Handles multi-member gzip files (including BGZF).
  * Returns number of bytes read (0 = EOF, negative = error).
  */
-ptrdiff_t gzip_read(GzipStreamReader* reader, char* buffer, size_t len) {
+inline ptrdiff_t gzip_read(GzipStreamReader* reader, char* buffer, size_t len) {
     if (!reader || !reader->file) {
         return -1;
     }
