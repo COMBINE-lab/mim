@@ -15,7 +15,7 @@ the `mim` index is a small index that gives critical knowledge into the internal
 meson setup builddir
 
 # Or with custom options
-meson setup builddir -Doptimization=3 -Ddebug=true
+meson setup builddir --buildtype=release -Doptimization=3 -Ddebug=true
 
 # Build all targets
 meson compile -C builddir
