@@ -43,12 +43,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
 #include <zlib.h>
+#include "json.hpp"
 #include "blake3.h"
 
 using namespace std;
@@ -82,6 +84,7 @@ struct record_checkpoint {
 
 // Access point list.
 struct deflate_index {
+  std::vector<std::uint8_t>* metadata_dict; // CBOR blob
   int have;              // number of access points in list
   int mode;              // -15 for raw, 15 for zlib, or 31 for gzip
   off_t length;          // total length of uncompressed data
@@ -166,40 +169,20 @@ inline void deflate_index_free(struct deflate_index *index) {
   }
 }
 
-// Save index to file.
-inline int deflate_index_save(FILE *out, struct deflate_index *index) {
-  // Write metadata
-  auto start = std::chrono::high_resolution_clock::now();
-  if (fwrite(&index->mode, sizeof(index->mode), 1, out) != 1 ||
-      fwrite(&index->length, sizeof(index->length), 1, out) != 1 ||
-      fwrite(&index->have, sizeof(index->have), 1, out) != 1 ||
-      fwrite(&index->num_record_chunks, sizeof(index->num_record_chunks), 1, out) != 1 ||
-      fwrite(&index->compressed_hash, BLAKE3_OUT_LEN, 1, out) != 1) {
+template <typename T>
+inline int write_vector_to_gzfile(gzFile out, std::vector<T>& v, const std::string desc) {
+  constexpr size_t max_buf_write = std::numeric_limits<int>::max();
+  // the metadata
+  size_t vec_len = v.size();
+  auto elem_t_size = sizeof(decltype(v.front()));
+  if ((elem_t_size * vec_len) >= max_buf_write) {
+    fprintf(stderr, "%s too large to write in gzwrite() call\n", desc.c_str());
     return Z_ERRNO;
   }
-
-  // Write access points
-  for (int i = 0; i < index->have; i++) {
-    point_t& point = (*index->list)[i];
-    if (fwrite(&point.out, sizeof(point.out), 1, out) != 1 ||
-        fwrite(&point.in, sizeof(point.in), 1, out) != 1 ||
-        fwrite(&point.bits, sizeof(point.bits), 1, out) != 1 ||
-        fwrite(&point.dict, sizeof(point.dict), 1, out) != 1 ||
-        fwrite(point.window, 1, point.dict, out) != point.dict)
-      return Z_ERRNO;
-  }
-
-  // Write record boundaries
-  size_t boundaries_count = index->record_boundaries->size();
-  if (fwrite(&boundaries_count, sizeof(boundaries_count), 1, out) != 1 ||
-      fwrite(index->record_boundaries->data(), sizeof(record_checkpoint),
-             boundaries_count, out) != boundaries_count)
+  if (gzwrite(out, &vec_len, sizeof(vec_len)) != sizeof(vec_len) ||
+      gzwrite(out, v.data(), elem_t_size * vec_len) != static_cast<int>(elem_t_size * vec_len)) {
     return Z_ERRNO;
-  auto end = std::chrono::high_resolution_clock::now();
-  auto duration =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-  cout << "Time to save the index " << duration.count() << " milliseconds"
-       << endl;
+  }
   return 0;
 }
 
@@ -210,6 +193,9 @@ inline int deflate_index_save_gzip(gzFile out, struct deflate_index *index) {
   long long int index_size = 0;
   long long int offset_size = 0;
   // Write metadata
+  // for the metadata dictionary
+  // index_size += index->metadata_dict.size();
+
   index_size += sizeof(index->mode);
   index_size += sizeof(index->have);
   index_size += sizeof(index->length);
@@ -217,6 +203,10 @@ inline int deflate_index_save_gzip(gzFile out, struct deflate_index *index) {
   index_size += BLAKE3_OUT_LEN;
 
   auto start = std::chrono::high_resolution_clock::now();
+  // the metadata
+  auto ret = write_vector_to_gzfile<uint8_t>(out, *index->metadata_dict, "metadata_dict");
+  if (ret != 0) { return ret; }
+
   if (gzwrite(out, &index->mode, sizeof(index->mode)) != sizeof(index->mode) ||
       gzwrite(out, &index->have, sizeof(index->have)) != sizeof(index->have) ||
       gzwrite(out, &index->length, sizeof(index->length)) !=
@@ -246,17 +236,13 @@ inline int deflate_index_save_gzip(gzFile out, struct deflate_index *index) {
 
   // Write record boundaries
   size_t boundaries_count = index->record_boundaries->size();
-  auto elem_t_size = sizeof(decltype(index->record_boundaries->front()));
+  using elem_t =
+      typename std::decay<decltype(*index->record_boundaries->begin())>::type;
+  auto elem_t_size = sizeof(elem_t);
   offset_size += sizeof(boundaries_count);
   offset_size += elem_t_size * boundaries_count;
-  if ((elem_t_size * boundaries_count) >= max_buf_write) {
-    fprintf(stderr, "boundaried vector is too large to write in gzwrite() call\n");
-    return Z_ERRNO;
-  }
-  if (gzwrite(out, &boundaries_count, sizeof(boundaries_count)) != sizeof(boundaries_count) ||
-      gzwrite(out, index->record_boundaries->data(), elem_t_size * boundaries_count) != static_cast<int>(elem_t_size * boundaries_count)) {
-    return Z_ERRNO;
-  }
+  ret = write_vector_to_gzfile<elem_t>(out, *index->record_boundaries, "boundaries vector");
+  if (ret != 0) { return ret; }
   
   index_size += sizeof(index->total_record_count);
   if (gzwrite(out, &index->total_record_count, sizeof(index->total_record_count)) != sizeof(index->total_record_count)) {
@@ -276,84 +262,6 @@ inline int deflate_index_save_gzip(gzFile out, struct deflate_index *index) {
   return 0;
 }
 
-// Read index from file.
-inline int deflate_index_load(FILE *in, struct deflate_index **built) {
-  auto start = std::chrono::high_resolution_clock::now();
-  struct deflate_index *index =
-      (struct deflate_index *)malloc(sizeof(struct deflate_index));
-  if (index == nullptr)
-    return Z_MEM_ERROR;
-
-  // Read metadata
-  if (fread(&index->mode, sizeof(index->mode), 1, in) != 1 ||
-      fread(&index->length, sizeof(index->length), 1, in) != 1 ||
-      fread(&index->have, sizeof(index->have), 1, in) != 1 ||
-      fread(&index->num_record_chunks, sizeof(index->num_record_chunks), 1,
-            in) != 1 || 
-      fread(&index->compressed_hash, BLAKE3_OUT_LEN, 1, in) != 1) {
-    free(index);
-    return Z_ERRNO;
-  }
-
-  // Read access points
-  index->list->resize(index->have); //= (point_t *)malloc(sizeof(point_t) * index->have);
-  /*
-  if (index->list == nullptr) {
-    deflate_index_free(index);
-    return Z_MEM_ERROR;
-  }
-  */
-
-  for (int i = 0; i < index->have; i++) {
-    point_t& point = (*index->list)[i];
-    if (fread(&point.out, sizeof(point.out), 1, in) != 1 ||
-        fread(&point.in, sizeof(point.in), 1, in) != 1 ||
-        fread(&point.bits, sizeof(point.bits), 1, in) != 1 ||
-        fread(&point.dict, sizeof(point.dict), 1, in) != 1) {
-      //deflate_index_free(index);
-      return Z_ERRNO;
-    }
-    point.window = (unsigned char *)malloc(point.dict);
-    if (point.window == nullptr) {
-      deflate_index_free(index);
-      return Z_MEM_ERROR;
-    }
-    if (fread(point.window, 1, point.dict, in) != point.dict) {
-      deflate_index_free(index);
-      return Z_ERRNO;
-    }
-  }
-
-  // Read record boundaries
-  size_t boundaries_count;
-  if (fread(&boundaries_count, sizeof(boundaries_count), 1, in) != 1) {
-    deflate_index_free(index);
-    return Z_ERRNO;
-  }
-  index->record_boundaries = new vector<record_checkpoint>();
-  index->record_boundaries->resize(boundaries_count);
-  if (fread(index->record_boundaries->data(), sizeof(record_checkpoint),
-            boundaries_count, in) != boundaries_count) {
-    deflate_index_free(index);
-    return Z_ERRNO;
-  }
-
-  // Initialize inflation state
-  index->strm.zalloc = Z_NULL;
-  index->strm.zfree = Z_NULL;
-  index->strm.opaque = Z_NULL;
-  inflateInit2(&index->strm, index->mode);
-
-  // Return index
-  *built = index;
-  auto end = std::chrono::high_resolution_clock::now();
-  auto duration =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-  cout << "Time to load the index " << duration.count() << " milliseconds"
-       << endl;
-  return index->have;
-}
-
 // Read index from gzip file.
 inline int deflate_index_load_gzip(gzFile in, struct deflate_index **built) {
   auto start = std::chrono::high_resolution_clock::now();
@@ -364,6 +272,24 @@ inline int deflate_index_load_gzip(gzFile in, struct deflate_index **built) {
   if (index == nullptr)
     return Z_MEM_ERROR;
 
+  // read metadata_dict
+  size_t metadata_dict_len = 0;
+  using metadata_dict_elem_t = typename std::decay<decltype(*index->metadata_dict->begin())>::type;
+  size_t metadata_dict_elem_t_size = sizeof(metadata_dict_elem_t);
+  if (gzread(in, &metadata_dict_len, sizeof(metadata_dict_len)) != sizeof(metadata_dict_len)) {
+    return Z_ERRNO;
+  }
+  index->metadata_dict = new std::vector<metadata_dict_elem_t>();
+  index->metadata_dict->resize(metadata_dict_len);
+  if ((metadata_dict_elem_t_size * metadata_dict_len) >= max_buf_read) {
+    fprintf(stderr, "metadat_dict is too large for gzread.");
+    return Z_ERRNO;
+  }
+  if (gzread(in, index->metadata_dict->data(), metadata_dict_elem_t_size * metadata_dict_len) != static_cast<int>(metadata_dict_elem_t_size * metadata_dict_len)) {
+    deflate_index_free(index);
+    return Z_ERRNO;
+  }
+  
   // Read metadata
   if (gzread(in, &index->mode, sizeof(index->mode)) != sizeof(index->mode) ||
       gzread(in, &index->have, sizeof(index->have)) != sizeof(index->have) ||
@@ -924,7 +850,7 @@ inline ptrdiff_t deflate_index_extract(FILE *in, struct deflate_index *index,
   }
 }
 
-inline void build_index(const char *gzFile1, off_t span) {
+inline void build_index(const char *gzFile1, off_t span, nlohmann::json&& user_metadata) {
   // open the input gzipped FASTA/Q file
   FILE *in = fopen(gzFile1, "rb");
   if (in == nullptr) {
@@ -958,6 +884,15 @@ inline void build_index(const char *gzFile1, off_t span) {
   }
 
   fprintf(stderr, "zran: built index with %d access points!\n", len);
+
+  // metadata
+  using json = nlohmann::json;
+  json j;
+  j["version"] = "1.0.0";
+  j["user_metadata"] = user_metadata;
+  const auto cbor_dat = json::to_cbor(j);
+  index->metadata_dict = new vector<uint8_t>(cbor_dat);
+  
   //print_index(index);
   fprintf(stderr, "Getting records boundaries from FASTQ file\n");
   klibpp::KSeq record;

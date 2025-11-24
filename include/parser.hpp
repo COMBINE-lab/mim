@@ -3,6 +3,7 @@
 #include "kseq++/seqio.hpp"
 #include "zran.hpp"
 #include "kseqcharstream.hpp"
+#include "json.hpp"
 #include <atomic>
 #include <functional>
 #include <memory>

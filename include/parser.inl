@@ -141,6 +141,7 @@ int ParrFQParser<ReadChunkT>::stop() {
 template <typename ReadChunkT>
 int ParrFQParser<ReadChunkT>::loadIndex(const std::string& indexFileName, 
                                         std::unique_ptr<struct deflate_index, std::function<void(struct deflate_index *)>>& idx_ptr) {
+  using json = nlohmann::json;
   struct deflate_index* index = NULL;
   FILE *indexFile = fopen(indexFileName.c_str() , "rb");
   if (indexFile == NULL) {
@@ -161,6 +162,12 @@ int ParrFQParser<ReadChunkT>::loadIndex(const std::string& indexFileName,
     fprintf(stderr, "%02x", index->compressed_hash[i]);
   }
   fprintf(stderr, "\n");
+  /*
+  fprintf(stderr, "metadata dictionary : \n");
+  json metadata_dict = json::from_cbor(*index->metadata_dict);
+  fprintf(stderr, "%s", metadata_dict.dump(4).c_str());
+  fprintf(stderr, "\n");
+  */
   idx_ptr.reset(index);
   return 0;
 }
