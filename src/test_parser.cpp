@@ -25,6 +25,8 @@ Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::s
 
   using namespace indicators;
 
+  std::atomic<size_t> maxticks = parser.get_num_reads() / 100000;
+  std::atomic<size_t> nticks{0};
   // Hide cursor
   show_console_cursor(false);
 
@@ -35,7 +37,7 @@ Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::s
     option::Lead{"█"},
     option::Remainder{"-"},
     option::End{"]"},
-    option::MaxProgress{parser.get_num_reads() / 100000},
+    option::MaxProgress{maxticks},
     option::ForegroundColor{Color::yellow},
     option::ShowElapsedTime{true},
     option::ShowRemainingTime{true},
@@ -57,7 +59,10 @@ Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::s
       ReadPair seq;
       uint64_t cur_rec{0};
       while (rg >> seq) { 
-        if (cur_rec % 100000 == 0) { bar.tick(); }
+        if (cur_rec % 100000 == 0) { 
+          ++nticks; 
+          if (nticks < maxticks) { bar.tick(); } 
+        } 
         ++cur_rec;
         for (size_t j = 0; j < seq.first.seq.length(); ++j) {
           char c = seq.first.seq[j];
@@ -141,6 +146,8 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
 
   std::vector<Bases> counters(nt, {0, 0, 0, 0});
   std::atomic<size_t> ctr{0};
+  std::atomic<size_t> nticks{0};
+  std::atomic<size_t> maxticks = parser.get_num_reads() / 100000;
   {
     indicators::ProgressBar bar{
       option::BarWidth{50},
@@ -149,7 +156,7 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
       option::Lead{"█"},
       option::Remainder{"-"},
       option::End{"]"},
-      option::MaxProgress{parser.get_num_reads() / 100000},
+      option::MaxProgress{maxticks.load()},
       option::ForegroundColor{Color::yellow},
       option::ShowElapsedTime{true},
       option::ShowRemainingTime{true},
@@ -169,7 +176,10 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
         klibpp::KSeq seq;
         uint64_t cur_rec{0};
         while (rg >> seq) { 
-          if (cur_rec % 100000 == 0) { bar_ptr->tick(); }
+          if (cur_rec % 100000 == 0) { 
+            ++nticks; 
+            if (nticks < maxticks) { bar.tick(); } 
+          };
           ++cur_rec;
           for (size_t j = 0; j < seq.seq.length(); ++j) {
             char c = seq.seq[j];
