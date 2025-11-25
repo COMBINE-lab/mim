@@ -55,6 +55,9 @@
 
 using namespace std;
 
+constexpr char MIMINDEX_STR[] = "MIMINDEX";
+constexpr int MIMINDEX_LEN = sizeof(MIMINDEX_STR) - 1; // 8
+
 #define WINSIZE 32768U // sliding window size
 #define CHUNK 16384    // file input buffer size
 
@@ -190,6 +193,11 @@ inline int write_vector_to_gzfile(gzFile out, std::vector<T>& v, const std::stri
 inline int deflate_index_save_gzip(gzFile out, struct deflate_index *index) {
   constexpr size_t max_buf_write = std::numeric_limits<int>::max();
 
+  // first write the magic header
+  if (gzwrite(out, MIMINDEX_STR, MIMINDEX_LEN) != MIMINDEX_LEN) {
+    fprintf(stderr, "Could not write magic header out to file!");
+  }
+
   long long int index_size = 0;
   long long int offset_size = 0;
   // Write metadata
@@ -267,6 +275,22 @@ inline int deflate_index_load_gzip(gzFile in, struct deflate_index **built) {
   auto start = std::chrono::high_resolution_clock::now();
   constexpr size_t max_buf_read = std::numeric_limits<int>::max();
 
+  // first read the magic header
+  char buf[MIMINDEX_LEN];
+
+  // Attempt to read exactly 8 bytes.
+  int n = gzread(in, buf, MIMINDEX_LEN);
+  if (n != MIMINDEX_LEN) {
+    fprintf(stderr, "gzread failed to read magic header!\n");
+    return Z_ERRNO;
+  }
+
+  // Compare with the expected string.
+  if (std::memcmp(buf, MIMINDEX_STR, MIMINDEX_LEN) != 0) {
+        fprintf(stderr, "Invalid header: expected MIMINDEX\n");
+      return -1;
+  }
+ 
   struct deflate_index *index =
       (struct deflate_index *)malloc(sizeof(struct deflate_index));
   if (index == nullptr)
