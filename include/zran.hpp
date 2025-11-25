@@ -49,6 +49,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+#include <optional>
 #include <zlib.h>
 #include "json.hpp"
 #include "blake3.h"
@@ -874,7 +875,7 @@ inline ptrdiff_t deflate_index_extract(FILE *in, struct deflate_index *index,
   }
 }
 
-inline void build_index(const char *gzFile1, off_t span, nlohmann::json&& user_metadata) {
+inline void build_index(const char *gzFile1, off_t span, nlohmann::json&& user_metadata, std::optional<std::string>& opt_out) {
   // open the input gzipped FASTA/Q file
   FILE *in = fopen(gzFile1, "rb");
   if (in == nullptr) {
@@ -966,8 +967,13 @@ inline void build_index(const char *gzFile1, off_t span, nlohmann::json&& user_m
   }
 
   // Save index to file
-  std::string filename_gzip(gzFile1);
-  filename_gzip += ".mim";
+  std::string filename_gzip;
+  if (opt_out) {
+    filename_gzip = opt_out.value();
+  } else {
+    filename_gzip = std::string(gzFile1);
+    filename_gzip += ".mim";
+  }
   fprintf(stderr, "zran: attempting to write index to %s\n", filename_gzip.c_str());
   gzFile idx_gzip = gzopen(filename_gzip.c_str(), "wb");
 

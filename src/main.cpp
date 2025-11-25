@@ -3,22 +3,25 @@
 #include "kseqcharstream.hpp"
 #include <chrono>
 #include <iostream>
+#include <optional>
 #include "zran.hpp"
 using namespace std;
 using namespace klibpp;
 
 int main(int argc, char **argv) {
-  CLI::App app{"Build and use ffindices"};
+  CLI::App app{"Build a mim index"};
   argv = app.ensure_utf8(argv);
 
   std::string fastqFile;
   std::string metadata_string;
   std::string metadata_file;
-  size_t span = 25'000'000;
+  std::string alt_out;
+  size_t span = 32'000'000;
   CLI::App* build = app.add_subcommand("build", "build subcommand");
   build->add_option<std::string>("fastq-path", fastqFile, "path to input fastq file.")->required();
-  build->add_option<size_t>("span", span, "span of uncompressed input bytes between checkpoints.")->required();
+  build->add_option<size_t>("--span", span, "span of uncompressed input bytes between checkpoints.")->capture_default_str();
   
+  auto output_opt = build->add_option<std::string>("--alt-output", alt_out, "alternative location to write the mim file (default is input path + \".mim\" extension)");
   auto metadata_opt = build->add_option<std::string>("--metadata", metadata_string, "metadata to embed in the header of the index.");
   auto metadata_file_opt = build->add_option<std::string>("--metadata-file", 
                                                           metadata_file, 
@@ -37,10 +40,13 @@ int main(int argc, char **argv) {
     } else if (*metadata_opt) {
       j = json::parse(metadata_string);
     }
+
+    std::optional<std::string> alt_out_path = (*output_opt) ? std::optional<std::string>(alt_out_path) : std::nullopt;
+
     // std::cout << "metadata = " << j.dump(4) << "\n";
     // build mode
     auto start = std::chrono::high_resolution_clock::now();
-    build_index(fastqFile.c_str(), span, std::move(j));
+    build_index(fastqFile.c_str(), span, std::move(j), alt_out_path);
     auto end = std::chrono::high_resolution_clock::now();
 
     // Calculate the duration in milliseconds
@@ -52,41 +58,5 @@ int main(int argc, char **argv) {
               << " milliseconds" << std::endl;
 
   } 
-  /*{
-    // use mode
-    off_t record_idx = -1;
-    off_t num_records = -1;
-    if (argc > 2) {
-      char *end;
-      record_idx = strtoll(argv[4], &end, 0);
-      if (*end) {
-        fprintf(stderr, "zran: invalid record_idx\n");
-        return 1;
-      }
-
-      char *end1;
-      num_records = strtoll(argv[5], &end1, 0);
-      if (*end1) {
-        fprintf(stderr, "zran: invalid num_records\n");
-        return 1;
-      }
-    }
-    unsigned char *buf;
-    int got;
-    std::tie(buf, got) = read_index(argv[2], argv[3], record_idx, num_records);
-    if (got < 0)
-      fprintf(stderr, "zran: extraction failed: %s error\n",
-              got == Z_MEM_ERROR ? "out of memory" : "input corrupted");
-    else {
-      fwrite(buf, 1, got, stdout);
-    }
-    KseqCharStreamIn in(reinterpret_cast<const char *>(buf), got);
-
-    //        klibpp::KSeq rec;
-    //        while (in >> rec) {
-    //          cout << rec.seq << endl;
-    //        }
-  }
-  */
   return 0;
 }
