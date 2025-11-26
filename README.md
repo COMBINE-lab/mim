@@ -8,7 +8,15 @@ Why `mim`? The project's name is a reference to the Norse figure [Mímir](https:
 
 the `mim` index is a small index that gives critical knowledge into the internal structure of a gzipped FASTA/Q file that allows rapid and efficient parallel parsing and decompression.
 
-## Building 
+The purpose of `mim` is so that one can create a `mim` index for gzipped FASTQ files that they anticipate will be reprocessed more than once (e.g. either by themselves or by another party after being deposited in a public database like ENA or SRA).  Having the `mim` index available make subsequent parsing of the data *much* faster, enabling more rapid re-analysis of data (e.g. when new versions of tools or even entirely different analysis algorithms become available).
+
+The `mim` index is purely additive (i.e. creating it does not modify or rewrite any part of the original file), small (typically about 1/1000-th the size of the compressed input file), and takes about as much time to make as simply parsing the input.  This makes it easy to create, store, transfer and share `mim` indexes.
+
+
+## Compiling
+
+
+The implementation in this repository use the [meson](https://mesonbuild.com/) build system, so you'll need `meson` installed, and [`ninja`](https://ninja-build.org/). Additionally, the current reference implementation is written in `C++`, so you'll need a `C++` compiler (at least capable of `C++17`).
 
 ```
 # Setup build directory
@@ -30,7 +38,7 @@ meson install -C builddir
 rm -rf builddir
 ```
 
-## Running this project
+## Building the `mim` index
 
 The `mimindex` executable builds the index. The interface is as below
 
@@ -54,23 +62,36 @@ Options:
 For example, to generate an index file using distance between access points of 64,000,000 bytes
 
 ```
-./builddir/mimindex build /path/to/compressed-fastq-file --span 32000000
+./builddir/mimindex build /path/to/compressed-fastq-file 
 ```
 
-To parse a file using the generated index:
+or, if you wanted to embed some useful information in the header
+
+```
+./builddir/mimindex build /path/to/compressed-fastq-file --metadata '{ "sample": "that evil fish", "date" : "Nov. 27" }'
+```
+
+## Using the `mim` index
+
+To parse a file using the generated index, we provide a sample application:
 
 ```
 ./builddir/test_mim_parser <nthreads> <fastq_file> <index_file> [<fastq_file2>] [<index_file2>]
 ```
 
+Right now, this sample application is only a proof of concept.  It simply counts the number of `A`, `C`, `G` and `T` nucleotides in all of the reads in the file.  However, we've build the `mim`-enabled parser to be generic and easy to reuse, so that developers can easily integrate it into their own applications.  Likewise, we are working on build `mim`-enabled parsers in Rust (and Python) that we hope to share here soon!
+
 ## About kseq++
 
-(From https://github.com/cartoonist/kseqpp)
+The parser upon which our `mim`-enabled parser is built it [`kseq++`](https://github.com/cartoonist/kseqpp).
 
-kseq++ is a C++11 re-implementation of [kseq.h](https://github.com/attractivechaos/klib/blob/master/kseq.h). We have
+From the `kseq++` website:
+
+> kseq++ is a C++11 re-implementation of [kseq.h](https://github.com/attractivechaos/klib/blob/master/kseq.h). We have
 extended its functionality to also compute byte offsets from starting of compressed fastq file, for each record, which
-is stored in struct KSeq. Additionaly, we have extended its functionality to be able to parse fastq records starting from 
-a specific point in a gzipped file starting at a checkpoint.
+is stored in struct KSeq. 
+
+Additionaly, we have extended its functionality to be able to parse fastq records starting from a specific point in a gzipped file starting at a checkpoint.
 
 #### Note: `mim` started originally as a class project for CMSC701 at the University of Maryland. 
 

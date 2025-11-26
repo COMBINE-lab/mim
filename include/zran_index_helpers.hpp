@@ -97,7 +97,7 @@ struct GzipStreamReader {
     ZStream zstream;               // Decompression stream (managed internally)
     off_t uncompressed_offset;     // Current position in uncompressed data
     
-    unsigned char input_buffer[4096];   // Buffer for compressed input
+    unsigned char input_buffer[32768];   // Buffer for compressed input
     size_t input_buffer_size;           // Valid bytes in input buffer
     size_t input_buffer_pos;            // Current position in input buffer
     off_t file_offset;                  // Current position in file
