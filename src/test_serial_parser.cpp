@@ -7,8 +7,37 @@
 using namespace klibpp;
 
 struct Bases {
-  uint64_t A, C, G, T;
+  alignas(64) uint64_t A;
+  uint64_t C;
+  uint64_t G;
+  uint64_t T;
 };
+
+struct Counters {
+  alignas(64) std::array<uint64_t, 4> counts; 
+};
+
+// Lookup table: maps ASCII char to index (0=A, 1=C, 2=G, 3=T, -1=other)
+static constexpr int8_t lookup[256] = {
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1, 0,-1, 1,-1,-1,-1, 2,-1,-1,-1,-1,-1,-1,-1,-1, // @ABCDEFGHIJKLMNO
+  -1,-1,-1,-1, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1, // PQRSTUVWXYZ
+  -1, 0,-1, 1,-1,-1,-1, 2,-1,-1,-1,-1,-1,-1,-1,-1, // `abcdefghijklmno
+  -1,-1,-1,-1, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1, // pqrstuvwxyz
+  // Rest are -1
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+};
+
 
 Bases parse_file_pair(const std::string& fname, const std::string& fname2, size_t& ctr) {
   KSeq seq;
@@ -19,79 +48,34 @@ Bases parse_file_pair(const std::string& fname, const std::string& fname2, size_
   auto ks = make_kstream(fp, gzread, mode::in);
   auto ks2 = make_kstream(fp2, gzread, mode::in);
 
-  Bases b = {0, 0, 0, 0};
+  Counters counter = {0, 0, 0, 0};
   while ((ks >> seq) && (ks2 >> seq2)) { 
-    for (size_t j = 0; j < seq.seq.length(); ++j) {
-      char c = seq.seq[j];
-      switch (c) {
-        case 'A':
-          b.A++;
-          break;
-        case 'C':
-          b.C++;
-          break;
-        case 'G':
-          b.G++;
-          break;
-        case 'T':
-          b.T++;
-          break;
-        default:
-          break;
-      }
+    for (unsigned char c : seq.seq) {
+      int idx = lookup[c];
+      if (idx >= 0) { counter.counts[idx]++; }
     }
-    for (size_t j = 0; j < seq2.seq.length(); ++j) {
-      char c = seq2.seq[j];
-      switch (c) {
-        case 'A':
-          b.A++;
-          break;
-        case 'C':
-          b.C++;
-          break;
-        case 'G':
-          b.G++;
-          break;
-        case 'T':
-          b.T++;
-          break;
-        default:
-          break;
-      }
+    for (unsigned char c : seq2.seq) {
+      int idx = lookup[c];
+      if (idx >= 0) { counter.counts[idx]++; }
     }
     ++ctr;
   }
-  return b;
+  return Bases{counter.counts[0], counter.counts[1], counter.counts[2], counter.counts[3]};
 }
 
 Bases parse_single_file(const std::string& fname, size_t& ctr) {
   KSeq seq;
   gzFile fp = gzopen(fname.c_str(), "r");
   auto ks = make_kstream(fp, gzread, mode::in);
-  Bases b = {0, 0, 0, 0};
+  Counters counter = {0, 0, 0, 0};
   while (ks >> seq) { 
-    for (size_t j = 0; j < seq.seq.length(); ++j) {
-      char c = seq.seq[j];
-      switch (c) {
-        case 'A':
-          b.A++;
-          break;
-        case 'C':
-          b.C++;
-          break;
-        case 'G':
-          b.G++;
-          break;
-        case 'T':
-          b.T++;
-          break;
-        default:
-          break;
-      }
+    for (unsigned char c : seq.seq) {
+      int idx = lookup[c];
+      if (idx >= 0) { counter.counts[idx]++; }
     }
     ++ctr;
   }
-  return b;
+  return Bases{counter.counts[0], counter.counts[1], counter.counts[2], counter.counts[3]};
 }
 
 int main(int argc, char* argv[]) {
