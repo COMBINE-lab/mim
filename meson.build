@@ -30,12 +30,13 @@ message('CMake targets:\n - ' + '\n - '.join(zlib_ng_proj.target_list()))
 # Get the static library target directly
 zlib_ng_lib = zlib_ng_proj.target('zlib')
 thread_dep = dependency('threads', required : true)
-blake3_dep = dependency('blake3', required : true, fallback : ['blake3', 'blake3_dep'])
+#blake3_dep = dependency('blake3', required : true, fallback : ['blake3', 'blake3_dep'])
 
 # Get blake3 include directories from the subproject
 # This is needed because dependency include_directories don't always propagate
 blake3_subproj = subproject('blake3')
 blake3_inc = blake3_subproj.get_variable('blake3_inc_dir')
+blake3_dep = blake3_proj.get_variable('blake3_dep')
 
 # Include directories
 inc_dirs = include_directories('.', 'include')
