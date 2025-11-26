@@ -50,7 +50,7 @@
 #include <stdexcept>
 #include <utility>
 #include <optional>
-#include <zlib.h>
+#include "zlib.h"
 #include "json.hpp"
 #include "blake3.h"
 
