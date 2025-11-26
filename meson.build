@@ -36,7 +36,7 @@ thread_dep = dependency('threads', required : true)
 # This is needed because dependency include_directories don't always propagate
 blake3_subproj = subproject('blake3')
 blake3_inc = blake3_subproj.get_variable('blake3_inc_dir')
-blake3_dep = blake3_proj.get_variable('blake3_dep')
+blake3_dep = blake3_subproj.get_variable('blake3_dep')
 
 # Include directories
 inc_dirs = include_directories('.', 'include')
