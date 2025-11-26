@@ -14,6 +14,32 @@ struct Bases {
   uint64_t T;
 };
 
+struct Counters {
+  alignas(64) std::array<uint64_t, 4> counts; 
+};
+
+
+// Lookup table: maps ASCII char to index (0=A, 1=C, 2=G, 3=T, -1=other)
+static constexpr int8_t lookup[256] = {
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1, 0,-1, 1,-1,-1,-1, 2,-1,-1,-1,-1,-1,-1,-1,-1, // @ABCDEFGHIJKLMNO
+  -1,-1,-1,-1, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1, // PQRSTUVWXYZ
+  -1, 0,-1, 1,-1,-1,-1, 2,-1,-1,-1,-1,-1,-1,-1,-1, // `abcdefghijklmno
+  -1,-1,-1,-1, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1, // pqrstuvwxyz
+  // Rest are -1
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+};
+
 Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::string& fastqFile2, std::string& indexFile2, size_t nt, size_t& ctr_out) {
   ParrFQParser<ReadPairChunk> parser;
   parser.init_pair(fastqFile, indexFile, fastqFile2, indexFile2, nt);
@@ -45,10 +71,11 @@ Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::s
   };
 
   std::cerr << "NUMBER OF READS " << parser.get_num_reads() << "\n";
-
+  
   std::vector<std::thread> readers;
-  std::vector<Bases> counters(nt, {0, 0, 0, 0});
+  std::vector<Counters> counters(nt, {0, 0, 0, 0});
   std::atomic<size_t> ctr{0};
+
   for (size_t i = 0; i < nt; ++i) {
     readers.emplace_back([&, i]() {
       auto rgo = parser.get_read_chunk();
@@ -65,42 +92,14 @@ Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::s
         } 
         ++cur_rec;
         for (size_t j = 0; j < seq.first.seq.length(); ++j) {
-          char c = seq.first.seq[j];
-          switch (c) {
-            case 'A':
-              counters[i].A++;
-              break;
-            case 'C':
-              counters[i].C++;
-              break;
-            case 'G':
-              counters[i].G++;
-              break;
-            case 'T':
-              counters[i].T++;
-              break;
-            default:
-              break;
-          }
+            char c = seq.first.seq[j];
+            int idx = lookup[c];
+            if (idx >= 0) { counters[i].counts[idx]++; }
         }
         for (size_t j = 0; j < seq.second.seq.length(); ++j) {
           char c = seq.second.seq[j];
-          switch (c) {
-            case 'A':
-              counters[i].A++;
-              break;
-            case 'C':
-              counters[i].C++;
-              break;
-            case 'G':
-              counters[i].G++;
-              break;
-            case 'T':
-              counters[i].T++;
-              break;
-            default:
-              break;
-          }
+          int idx = lookup[c];
+          if (idx >= 0) { counters[i].counts[idx]++; }
         }
       }
 
@@ -108,21 +107,21 @@ Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::s
       return 0;
     });
   }
-
   for (auto& t : readers) {
     t.join();
   }
   bar.mark_as_completed();
   parser.stop();
+
   // Show cursor
   indicators::show_console_cursor(true);
   ctr_out = ctr;
   Bases b = {0, 0, 0, 0};
   for (size_t i = 0; i < nt; ++i) {
-    b.A += counters[i].A;
-    b.C += counters[i].C;
-    b.G += counters[i].G;
-    b.T += counters[i].T;
+    b.A += counters[i].counts[0];//.A;
+    b.C += counters[i].counts[1];//.C;
+    b.G += counters[i].counts[2];//.G;
+    b.T += counters[i].counts[3];//.T;
   }
   return b;
 }
@@ -144,7 +143,7 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
 
   
 
-  std::vector<Bases> counters(nt, {0, 0, 0, 0});
+  std::vector<Counters> counters(nt, {0, 0, 0, 0});
   std::atomic<size_t> ctr{0};
   std::atomic<size_t> nticks{0};
   std::atomic<size_t> maxticks = parser.get_num_reads() / 100000;
@@ -183,22 +182,8 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
           ++cur_rec;
           for (size_t j = 0; j < seq.seq.length(); ++j) {
             char c = seq.seq[j];
-            switch (c) {
-              case 'A':
-                counters[i].A++;
-                break;
-              case 'C':
-                counters[i].C++;
-                break;
-              case 'G':
-                counters[i].G++;
-                break;
-              case 'T':
-                counters[i].T++;
-                break;
-              default:
-                break;
-            }
+            int idx = lookup[c];
+            if (idx >= 0) { counters[i].counts[idx]++; }
           }
         }
         ctr += cur_rec; 
@@ -217,10 +202,10 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
   ctr_out = ctr;
   Bases b = {0, 0, 0, 0};
   for (size_t i = 0; i < nt; ++i) {
-    b.A += counters[i].A;
-    b.C += counters[i].C;
-    b.G += counters[i].G;
-    b.T += counters[i].T;
+    b.A += counters[i].counts[0];
+    b.C += counters[i].counts[1];
+    b.G += counters[i].counts[2];
+    b.T += counters[i].counts[3];
   }
   return b;
 }
