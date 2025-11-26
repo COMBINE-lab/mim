@@ -18,7 +18,6 @@ struct Counters {
   alignas(64) std::array<uint64_t, 4> counts; 
 };
 
-
 // Lookup table: maps ASCII char to index (0=A, 1=C, 2=G, 3=T, -1=other)
 static constexpr int8_t lookup[256] = {
   -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
@@ -91,13 +90,11 @@ Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::s
           if (nticks < maxticks) { bar.tick(); } 
         } 
         ++cur_rec;
-        for (size_t j = 0; j < seq.first.seq.length(); ++j) {
-            char c = seq.first.seq[j];
+        for (unsigned char c : seq.first.seq) {
             int idx = lookup[c];
             if (idx >= 0) { counters[i].counts[idx]++; }
         }
-        for (size_t j = 0; j < seq.second.seq.length(); ++j) {
-          char c = seq.second.seq[j];
+        for (unsigned char c : seq.second.seq) {
           int idx = lookup[c];
           if (idx >= 0) { counters[i].counts[idx]++; }
         }
@@ -180,8 +177,7 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
             if (nticks < maxticks) { bar.tick(); } 
           };
           ++cur_rec;
-          for (size_t j = 0; j < seq.seq.length(); ++j) {
-            char c = seq.seq[j];
+          for (unsigned char c : seq.seq) {
             int idx = lookup[c];
             if (idx >= 0) { counters[i].counts[idx]++; }
           }
