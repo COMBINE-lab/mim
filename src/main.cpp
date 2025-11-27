@@ -1,6 +1,5 @@
 #include "CLI11.hpp"
 #include "kseq++/seqio.hpp"
-#include "kseqcharstream.hpp"
 #include <chrono>
 #include <iostream>
 #include <optional>

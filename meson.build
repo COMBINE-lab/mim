@@ -4,6 +4,7 @@ project('mimindex', 'cpp',
     'warning_level=3',
     'cpp_std=c++17',
     'optimization=3',
+    'cpp_args=-march=native',
     'debug=true'
   ]
 )

@@ -145,6 +145,7 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
   std::atomic<size_t> nticks{0};
   std::atomic<size_t> maxticks = parser.get_num_reads() / 100000;
   {
+    /*
     indicators::ProgressBar bar{
       option::BarWidth{50},
       option::Start{" ["},
@@ -158,8 +159,8 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
       option::ShowRemainingTime{true},
       option::FontStyles{std::vector<FontStyle>{FontStyle::bold}}
     };
+    */
 
-    indicators::ProgressBar* bar_ptr = &bar; 
     std::vector<std::thread> readers;
     readers.reserve(nt);
     for (size_t i = 0; i < nt; ++i) {
@@ -172,10 +173,12 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
         klibpp::KSeq seq;
         uint64_t cur_rec{0};
         while (rg >> seq) { 
+          /*
           if (cur_rec % 100000 == 0) { 
             ++nticks; 
             if (nticks < maxticks) { bar.tick(); } 
           };
+          */
           ++cur_rec;
           for (unsigned char c : seq.seq) {
             int idx = lookup[c];
@@ -190,11 +193,11 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
     for (auto& t : readers) {
       t.join();
     }
-    bar.mark_as_completed();
+    //bar.mark_as_completed();
   }
   parser.stop();
   // Show cursor
-  indicators::show_console_cursor(true);
+  //indicators::show_console_cursor(true);
   ctr_out = ctr;
   Bases b = {0, 0, 0, 0};
   for (size_t i = 0; i < nt; ++i) {
