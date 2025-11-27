@@ -91,12 +91,10 @@ Bases do_count_paired_end(std::string& fastqFile, std::string& indexFile, std::s
         } 
         ++cur_rec;
         for (unsigned char c : seq.first.seq) {
-            int idx = lookup[c];
-            if (idx >= 0) { counters[i].counts[idx]++; }
+			counters[i].counts[(c >> 1) & 3] += 1;
         }
         for (unsigned char c : seq.second.seq) {
-          int idx = lookup[c];
-          if (idx >= 0) { counters[i].counts[idx]++; }
+			counters[i].counts[(c >> 1) & 3] += 1;
         }
       }
 
@@ -164,6 +162,7 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
     std::vector<std::thread> readers;
     readers.reserve(nt);
     for (size_t i = 0; i < nt; ++i) {
+      auto& counter = counters[i];
       readers.emplace_back([&, i]() {
         auto rgo = parser.get_read_chunk();
         if (!rgo) {
@@ -181,8 +180,7 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
           */
           ++cur_rec;
           for (unsigned char c : seq.seq) {
-            int idx = lookup[c];
-            if (idx >= 0) { counters[i].counts[idx]++; }
+			counter.counts[(c >> 1) & 3] += 1;
           }
         }
         ctr += cur_rec; 

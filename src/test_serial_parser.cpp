@@ -70,8 +70,7 @@ Bases parse_single_file(const std::string& fname, size_t& ctr) {
   Counters counter = {0, 0, 0, 0};
   while (ks >> seq) { 
     for (unsigned char c : seq.seq) {
-      int idx = lookup[c];
-      if (idx >= 0) { counter.counts[idx]++; }
+      counter.counts[(c>>1)&3] += 1;
     }
     ++ctr;
   }
