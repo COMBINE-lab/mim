@@ -23,7 +23,7 @@ vbq_index:
     # to take into account future optimizations?
     # bqtools encode -T6 --archive -o {{f}}.vbq {{f}}
     # bqtools encode -T6 --uncompressed -o {{f}}.vbq {{f}}
-    bqtools encode -T6 -o {{f}}.vbq {{f}}
+    bqtools encode -T6 -H -S4 -m vbq -o {{f}}.vbq {{f}}
 vbq-1:
     cd evals/binseq-test && time cargo run -r -- -T1 {{f}}.vbq
 vbq-6:

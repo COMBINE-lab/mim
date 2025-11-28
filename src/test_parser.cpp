@@ -241,7 +241,7 @@ int main(int argc, char* argv[]) {
   std::cerr << "\n#A = " << b.A << '\n';
   std::cerr << "#C = " << b.C << '\n';
   std::cerr << "#G = " << b.G << '\n';
-  std::cerr << "#T = " << b.T << '\n';
+  std::cerr << "#T (or N) = " << b.T << '\n';
   auto end = std::chrono::high_resolution_clock::now();
 
   // Calculate the duration in milliseconds
