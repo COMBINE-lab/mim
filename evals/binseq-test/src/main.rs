@@ -8,7 +8,6 @@ use binseq::{
     ParallelReader as BinseqParallelReader,
 };
 use clap::Parser;
-use hashbrown::HashMap;
 use paraseq::{
     fastx,
     parallel::ParallelProcessor as ParaseqParallelProcessor,
@@ -17,10 +16,12 @@ use paraseq::{
 };
 use parking_lot::Mutex;
 
+type Counts = [u64; 4];
+
 #[inline]
-fn count_nucleotides(map: &mut HashMap<u8, u64>, buf: &[u8]) {
-    buf.iter().for_each(|n| {
-        *map.entry(*n).or_insert(0) += 1;
+fn count_nucleotides(counts: &mut Counts, buf: &[u8]) {
+    buf.iter().for_each(|c| {
+        counts[((*c as usize) >> 1) & 3] += 1;
     });
 }
 
@@ -28,8 +29,8 @@ fn count_nucleotides(map: &mut HashMap<u8, u64>, buf: &[u8]) {
 pub struct Counter {
     sbuf: Vec<u8>,
     xbuf: Vec<u8>,
-    local_counts: HashMap<u8, u64>,
-    global_counts: Arc<Mutex<HashMap<u8, u64>>>,
+    local_counts: Counts,
+    global_counts: Arc<Mutex<Counts>>,
 }
 impl Counter {
     pub fn clear_buffers(&mut self) {
@@ -37,19 +38,19 @@ impl Counter {
         self.xbuf.clear();
     }
     pub fn merge_local_into_global(&mut self) {
-        self.local_counts.iter_mut().for_each(|(k, v)| {
-            *self.global_counts.lock().entry(*k).or_insert(0) += *v;
-            *v = 0;
-        });
+        let mut global = self.global_counts.lock();
+        for i in 0..4 {
+            global[i] += self.local_counts[i];
+        }
     }
-    pub fn get_global_counts(&self) -> HashMap<u8, u64> {
+    pub fn get_global_counts(&self) -> Counts {
         self.global_counts.lock().clone()
     }
     pub fn print_counts(&self) {
         let counts = self.get_global_counts();
         println!("Counts:");
-        for (n, count) in counts {
-            println!("{}: {}", n as char, count);
+        for i in 0..4 {
+            println!("{i}: {}", counts[i]);
         }
     }
 }
