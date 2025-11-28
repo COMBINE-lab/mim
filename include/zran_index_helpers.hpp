@@ -102,9 +102,15 @@ struct GzipStreamReader {
     ZStream zstream;               // Decompression stream (managed internally)
     off_t uncompressed_offset;     // Current position in uncompressed data
     
-    unsigned char input_buffer[65536];   // Larger buffer for better performance (64KB)
+    // Input buffer for compressed data
+    unsigned char input_buffer[131072];  // 128KB input buffer (matching gzread default)
     size_t input_buffer_size;           // Valid bytes in input buffer
     size_t input_buffer_pos;            // Current position in input buffer
+    
+    unsigned char output_buffer[131072]; // 128KB output buffer
+    size_t output_buffer_size;           // Valid decompressed bytes in output buffer
+    size_t output_buffer_pos;            // Current read position in output buffer
+    
     off_t file_offset;                  // Current position in file
     int bits_from_last_byte;            // Bits pending from previous byte
     bool multi_member;                  // Whether to check for multiple members
@@ -118,12 +124,15 @@ struct GzipStreamReader {
           uncompressed_offset(0),
           input_buffer_size(0),
           input_buffer_pos(0),
+          output_buffer_size(0),
+          output_buffer_pos(0),
           file_offset(0),
           bits_from_last_byte(0),
           multi_member(true),
           file_buffer(nullptr)
     {
         memset(input_buffer, 0, sizeof(input_buffer));
+        memset(output_buffer, 0, sizeof(output_buffer));
     }
     
     ~GzipStreamReader() {
@@ -191,6 +200,7 @@ std::unique_ptr<GzipStreamReader> open_gzip_stream_at_checkpoint(
     struct deflate_index* index,
     size_t checkpoint_index)
 {
+    
     if (!index || checkpoint_index >= static_cast<size_t>(index->have)) {
         throw std::invalid_argument("Invalid checkpoint index");
     }
@@ -206,16 +216,15 @@ std::unique_ptr<GzipStreamReader> open_gzip_stream_at_checkpoint(
     reader->index = index;
     reader->input_buffer_size = 0;
     reader->input_buffer_pos = 0;
-    reader->multi_member = true;  // Enable multi-member support
-   
-    // Enable buffered I/O with large buffer
-    const size_t file_buffer_size = 128 * 1024;  // 128KB
+    
+    const size_t file_buffer_size = 256 * 1024;  // 256KB 
     reader->file_buffer = new char[file_buffer_size];
     if (setvbuf(gz_file, reader->file_buffer, _IOFBF, file_buffer_size) != 0) {
+        // setvbuf failed, continue without custom buffer (will hurt performance)
         delete[] reader->file_buffer;
         reader->file_buffer = nullptr;
     }
-
+    
     // Get the checkpoint
     struct point* checkpoint = &(*index->list)[checkpoint_index];
     
@@ -228,31 +237,37 @@ std::unique_ptr<GzipStreamReader> open_gzip_stream_at_checkpoint(
     }
     reader->file_offset = checkpoint->in - (checkpoint->bits ? 1 : 0);
     
-    // Determine windowBits based on checkpoint position
-    int windowBits = -15;
-    
+    // Initialize the inflate stream
+    // Always use raw deflate when starting from a checkpoint, even checkpoint 0
+    // The checkpoint already accounts for any gzip headers
+    int windowBits = -15;  // Raw deflate (no wrapper)
     reader->zstream.init(windowBits);
+    
     z_stream* strm = reader->zstream.get();
     
-    // Set the decompression dictionary if not at the start
+    // Set the decompression dictionary (the 32KB window from the checkpoint)
     if (checkpoint->out > 0) {
         reader->zstream.setDictionary(checkpoint->window, 32768);
     }
     
     // Handle bit-level alignment
     if (checkpoint->bits) {
+        // We're starting mid-byte. Read that byte and prime the bit buffer.
         unsigned char last_byte;
         if (fread(&last_byte, 1, 1, gz_file) != 1) {
             throw std::runtime_error("Failed to read alignment byte");
         }
         reader->file_offset++;
         
+        // Use inflatePrime exactly as zran.c does:
+        // Pass checkpoint->bits (the number of bits ALREADY used)
+        // and shift right by (8 - checkpoint->bits) to get the unused portion
         int ret = inflatePrime(strm, checkpoint->bits, last_byte >> (8 - checkpoint->bits));
         if (ret != Z_OK) {
             throw std::runtime_error("Failed to prime inflate stream");
         }
         
-        // Read initial data into buffer
+        // Now read the next chunk of data into our buffer for inflate to use
         size_t bytes_read = fread(reader->input_buffer, 1, sizeof(reader->input_buffer), gz_file);
         if (bytes_read > 0) {
             reader->file_offset += bytes_read;
@@ -263,6 +278,7 @@ std::unique_ptr<GzipStreamReader> open_gzip_stream_at_checkpoint(
             strm->next_in = Z_NULL;
         }
     } else {
+        // No bit alignment needed, start with clean byte boundary
         strm->avail_in = 0;
         strm->next_in = Z_NULL;
     }
@@ -270,10 +286,10 @@ std::unique_ptr<GzipStreamReader> open_gzip_stream_at_checkpoint(
     return reader;
 }
 
-///
-// Skip gzip header and trailer to get to the next gzip member.
-// Returns 0 on success, -1 on error/EOF.
-///
+/**
+ * Skip gzip header and trailer to get to the next gzip member.
+ * Returns 0 on success, -1 on error/EOF.
+ */
 static int skip_gzip_header(z_stream* strm, FILE* file, unsigned char* input_buffer, 
                            size_t buffer_size, off_t* file_offset) {
     // Skip 8-byte gzip trailer (CRC32 + ISIZE)
@@ -389,66 +405,268 @@ static int skip_gzip_header(z_stream* strm, FILE* file, unsigned char* input_buf
     return 0;
 }
 
-///
- // Read decompressed data from the stream.
- // Handles multi-member gzip files (including BGZF).
- // Returns number of bytes read (0 = EOF, negative = error).
- ///
-inline ptrdiff_t gzipstream_read(GzipStreamReader* reader, char* buffer, size_t len) {
-    if (!reader || !reader->file) {
+/**
+ * Read decompressed data from the stream.
+ * Handles multi-member gzip files (including BGZF).
+ * Returns number of bytes read (0 = EOF, negative = error).
+ * 
+ * Optimized to match gzread's strategy:
+ * - For small reads: use internal buffer and copy
+ * - For large reads: decompress directly into user buffer
+ */
+ptrdiff_t gzipstream_read(GzipStreamReader* reader, char* buffer, size_t len) {
+    if (!reader || !reader->file || len == 0) {
         return -1;
     }
     
+    size_t total_copied = 0;
     z_stream* strm = reader->zstream.get();
-    strm->avail_out = len;
-    strm->next_out = reinterpret_cast<unsigned char*>(buffer);
     
-    while (strm->avail_out > 0) {
-        // Read more compressed data if needed
-        if (strm->avail_in == 0) {
-            size_t bytes_read = fread(reader->input_buffer, 1, sizeof(reader->input_buffer), reader->file);
-            if (bytes_read == 0) {
-                if (feof(reader->file)) {
-                    break;
-                } else {
+    // Threshold: Use buffered path for small requests (matching zlib-ng logic)
+    const size_t buffer_threshold = sizeof(reader->output_buffer);
+    
+    while (total_copied < len) {
+        size_t remaining = len - total_copied;
+        unsigned n = (remaining > UINT_MAX) ? UINT_MAX : (unsigned)remaining;
+        
+        // First: try to copy from output buffer if available
+        if (reader->output_buffer_pos < reader->output_buffer_size) {
+            unsigned available = reader->output_buffer_size - reader->output_buffer_pos;
+            if (available < n)
+                n = available;
+            
+            // Manual copy for small sizes (faster than memcpy)
+            if (n <= 64) {
+                unsigned char* dst = reinterpret_cast<unsigned char*>(buffer) + total_copied;
+                unsigned char* src = reader->output_buffer + reader->output_buffer_pos;
+                unsigned count = n;
+                do {
+                    *dst++ = *src++;
+                } while (--count);
+            } else {
+                memcpy(buffer + total_copied, 
+                       reader->output_buffer + reader->output_buffer_pos, 
+                       n);
+            }
+            
+            reader->output_buffer_pos += n;
+            total_copied += n;
+            reader->uncompressed_offset += n;
+            continue;
+        }
+        
+        // Check for end of file
+        if (strm->avail_in == 0 && feof(reader->file)) {
+            break;
+        }
+        
+        // Small request OR need to look for headers: use buffered path
+        if (n < buffer_threshold) {
+            // Reset output buffer for new fill
+            reader->output_buffer_pos = 0;
+            reader->output_buffer_size = 0;
+            
+            // Fill the output buffer completely
+            strm->next_out = reader->output_buffer;
+            strm->avail_out = sizeof(reader->output_buffer);
+            
+            while (strm->avail_out > 0) {
+                // Load more input if needed
+                if (strm->avail_in == 0) {
+                    size_t bytes_read = fread(reader->input_buffer, 1, 
+                                             sizeof(reader->input_buffer), reader->file);
+                    if (bytes_read == 0) {
+                        break;  // EOF or error
+                    }
+                    reader->file_offset += bytes_read;
+                    strm->avail_in = bytes_read;
+                    strm->next_in = reader->input_buffer;
+                }
+                
+                unsigned char* out_before = strm->next_out;
+                int ret = inflate(strm, Z_NO_FLUSH);
+                unsigned produced = strm->next_out - out_before;
+                reader->output_buffer_size += produced;
+                
+                if (ret == Z_STREAM_END) {
+                    if (!reader->multi_member) {
+                        break;
+                    }
+                    
+                    // Check if more data available
+                    if (strm->avail_in == 0 && feof(reader->file)) {
+                        break;
+                    }
+                    
+                    // Process next member
+                    if (skip_gzip_header(strm, reader->file, reader->input_buffer, 
+                                       sizeof(reader->input_buffer), &reader->file_offset) != 0) {
+                        break;
+                    }
+                    
+                    if (inflateReset(strm) != Z_OK) {
+                        return -1;
+                    }
+                } else if (ret != Z_OK && ret != Z_BUF_ERROR) {
                     return -1;
                 }
+                
+                // If we got Z_BUF_ERROR with no input, we need more data
+                if (ret == Z_BUF_ERROR && strm->avail_in == 0) {
+                    break;
+                }
+            }
+            
+            // Loop back to copy from output buffer
+            continue;
+        }
+        
+        // Large request: decompress directly into user buffer
+        // Load more compressed data if needed
+        if (strm->avail_in == 0) {
+            size_t bytes_read = fread(reader->input_buffer, 1, 
+                                     sizeof(reader->input_buffer), reader->file);
+            if (bytes_read == 0) {
+                return total_copied > 0 ? total_copied : 0;
             }
             reader->file_offset += bytes_read;
             strm->avail_in = bytes_read;
             strm->next_in = reader->input_buffer;
         }
         
-        // Decompress
+        // Decompress directly into user buffer
+        strm->next_out = reinterpret_cast<unsigned char*>(buffer) + total_copied;
+        strm->avail_out = n;
+        
+        unsigned char* out_before = strm->next_out;
         int ret = inflate(strm, Z_NO_FLUSH);
+        unsigned produced = strm->next_out - out_before;
+        
+        total_copied += produced;
+        reader->uncompressed_offset += produced;
         
         if (ret == Z_STREAM_END) {
-            // End of gzip member - check for another member
-            if (strm->avail_in > 0 || !feof(reader->file)) {
-                // Skip to next gzip member
-                if (skip_gzip_header(strm, reader->file, reader->input_buffer, 
-                                   sizeof(reader->input_buffer), &reader->file_offset) != 0) {
-                    break;
-                }
-                
-                // Reset inflate state for next member
-                if (inflateReset(strm) != Z_OK) {
-                    return -1;
-                }
-                continue;
-            } else {
-                break;
+            if (!reader->multi_member || (strm->avail_in == 0 && feof(reader->file))) {
+                return total_copied;
             }
-        } else if (ret == Z_OK || ret == Z_BUF_ERROR) {
-            continue;
-        } else {
+            
+            if (skip_gzip_header(strm, reader->file, reader->input_buffer, 
+                               sizeof(reader->input_buffer), &reader->file_offset) != 0) {
+                return total_copied;
+            }
+            
+            if (inflateReset(strm) != Z_OK) {
+                return -1;
+            }
+        } else if (ret != Z_OK && ret != Z_BUF_ERROR) {
             return -1;
         }
     }
     
-    size_t bytes_produced = len - strm->avail_out;
-    reader->uncompressed_offset += bytes_produced;
-    return bytes_produced;
+    return total_copied;
+}
+
+///
+ // Read decompressed data from the stream.
+ // Handles multi-member gzip files (including BGZF).
+ // Returns number of bytes read (0 = EOF, negative = error).
+ ///
+inline ptrdiff_t gzipstream_read_good(GzipStreamReader* reader, char* buffer, size_t len) {
+ if (!reader || !reader->file || len == 0) {
+        return -1;
+    }
+    
+    size_t total_copied = 0;
+    
+    while (total_copied < len) {
+        // If we have decompressed data in our output buffer, copy it first
+        if (reader->output_buffer_pos < reader->output_buffer_size) {
+            size_t available = reader->output_buffer_size - reader->output_buffer_pos;
+            size_t to_copy = (len - total_copied < available) ? (len - total_copied) : available;
+            
+            memcpy(buffer + total_copied, 
+                   reader->output_buffer + reader->output_buffer_pos, 
+                   to_copy);
+            
+            reader->output_buffer_pos += to_copy;
+            total_copied += to_copy;
+            reader->uncompressed_offset += to_copy;
+            
+            continue;
+        }
+        
+        // Output buffer is empty, need to decompress more data
+        // Reset output buffer for new decompression
+        reader->output_buffer_pos = 0;
+        reader->output_buffer_size = 0;
+        
+        z_stream* strm = reader->zstream.get();
+        
+        // Decompress a full buffer's worth into our output buffer
+        while (reader->output_buffer_size < sizeof(reader->output_buffer)) {
+            // Read more compressed data if needed
+            if (strm->avail_in == 0) {
+                size_t bytes_read = fread(reader->input_buffer, 1, sizeof(reader->input_buffer), reader->file);
+                if (bytes_read == 0) {
+                    // EOF or error - return what we've decompressed so far
+                    if (reader->output_buffer_size > 0) {
+                        goto copy_from_output;
+                    }
+                    return total_copied > 0 ? total_copied : 0;
+                }
+                reader->file_offset += bytes_read;
+                strm->avail_in = bytes_read;
+                strm->next_in = reader->input_buffer;
+            }
+            
+            // Set up output to decompress into our internal output buffer
+            strm->next_out = reader->output_buffer + reader->output_buffer_size;
+            strm->avail_out = sizeof(reader->output_buffer) - reader->output_buffer_size;
+            
+            // Decompress
+            int ret = inflate(strm, Z_NO_FLUSH);
+            
+            // Calculate how much was produced
+            size_t produced = (sizeof(reader->output_buffer) - reader->output_buffer_size) - strm->avail_out;
+            reader->output_buffer_size += produced;
+            
+            if (ret == Z_OK || ret == Z_BUF_ERROR) {
+                // Continue decompressing
+                continue;
+            } else if (ret == Z_STREAM_END) {
+                // End of gzip member
+                if (!reader->multi_member) {
+                    // Not checking for multi-member, done decompressing
+                    goto copy_from_output;
+                }
+                
+                // Check for another member
+                if (strm->avail_in > 0 || !feof(reader->file)) {
+                    if (skip_gzip_header(strm, reader->file, reader->input_buffer, 
+                                       sizeof(reader->input_buffer), &reader->file_offset) != 0) {
+                        goto copy_from_output;
+                    }
+                    
+                    if (inflateReset(strm) != Z_OK) {
+                        return -1;
+                    }
+                    continue;
+                } else {
+                    goto copy_from_output;
+                }
+            } else {
+                // Error
+                return -1;
+            }
+        }
+        
+copy_from_output:
+        // We've filled the output buffer (or reached EOF/end of member)
+        // Loop back to copy from it
+        continue;
+    }
+    
+    return total_copied;
 }
 
 #endif //ZRAN_INDEX_HELPERS_HPP
