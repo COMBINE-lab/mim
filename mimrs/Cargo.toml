@@ -1,0 +1,9 @@
+[package]
+name = "mimrs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+flate2 = "1.0"
+libc = { version = "0.2.177", features = ["use_std"] }
+serde_cbor = "0.11"

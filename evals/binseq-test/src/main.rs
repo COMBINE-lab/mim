@@ -9,10 +9,9 @@ use binseq::{
 };
 use clap::Parser;
 use paraseq::{
-    fastx,
+    Record, fastx,
     parallel::ParallelProcessor as ParaseqParallelProcessor,
     prelude::{PairedParallelProcessor, ParallelReader as ParaseqParallelReader},
-    Record,
 };
 use parking_lot::Mutex;
 

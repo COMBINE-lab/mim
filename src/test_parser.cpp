@@ -162,8 +162,8 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
     std::vector<std::thread> readers;
     readers.reserve(nt);
     for (size_t i = 0; i < nt; ++i) {
-      auto& counter = counters[i];
       readers.emplace_back([&, i]() {
+        auto& counter = counters[i];
         auto rgo = parser.get_read_chunk();
         if (!rgo) {
           return 1;
@@ -180,7 +180,7 @@ Bases do_count_single_end(std::string& fastqFile, std::string& indexFile, size_t
           */
           ++cur_rec;
           for (unsigned char c : seq.seq) {
-			counter.counts[(c >> 1) & 3] += 1;
+			      counter.counts[(c >> 1) & 3] += 1;
           }
         }
         ctr += cur_rec; 
