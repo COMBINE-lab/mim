@@ -1,14 +1,14 @@
 use crate::mim_types::DeflateIndex;
 use libz_sys::{
-    Z_BUF_ERROR, Z_NEED_DICT, Z_NO_FLUSH, Z_OK, Z_STREAM_END, inflate, inflateEnd, inflateInit2_,
-    inflatePrime, inflateReset, inflateSetDictionary, z_stream, zlibVersion,
+    Z_BUF_ERROR, Z_NO_FLUSH, Z_OK, Z_STREAM_END, inflate, inflateEnd, inflatePrime, inflateReset,
+    inflateSetDictionary, z_stream, zlibVersion,
 };
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
-use std::mem;
-use std::mem::MaybeUninit;
 use std::path::Path;
 use std::ptr;
+
+const BUFSIZE: usize = 131072;
 
 /// Safe wrapper around zlib's z_stream
 struct ZStreamWrapper {
@@ -53,10 +53,7 @@ impl ZStreamWrapper {
         };
 
         if ret != Z_OK {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("inflateInit2 failed: {}", ret),
-            ));
+            return Err(io::Error::other(format!("inflateInit2 failed: {}", ret)));
         }
 
         let state_ptr = unsafe { (*self.stream).state };
@@ -70,7 +67,7 @@ impl ZStreamWrapper {
     }
 
     fn set_dictionary(&mut self, dict: &[u8]) -> io::Result<()> {
-        let state_ptr = unsafe { (*self.stream).state };
+        let _state_ptr = unsafe { (*self.stream).state };
         let ret = unsafe { inflateSetDictionary(self.stream, dict.as_ptr(), dict.len() as u32) };
 
         if ret != Z_OK {
@@ -87,10 +84,7 @@ impl ZStreamWrapper {
         let ret = unsafe { inflatePrime(self.stream, bits, value) };
 
         if ret != Z_OK {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("inflatePrime failed: {}", ret),
-            ));
+            return Err(io::Error::other(format!("inflatePrime failed: {}", ret)));
         }
 
         Ok(())
@@ -100,10 +94,7 @@ impl ZStreamWrapper {
         let ret = unsafe { inflateReset(self.stream) };
 
         if ret != Z_OK {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("inflateReset failed: {}", ret),
-            ));
+            return Err(io::Error::other(format!("inflateReset failed: {}", ret)));
         }
 
         Ok(())
@@ -132,16 +123,16 @@ pub struct GzipStreamReader {
     uncompressed_offset: u64,
 
     // Input buffer for compressed data
-    input_buffer: Box<[u8; 131072]>, // 128KB
+    input_buffer: Box<[u8; BUFSIZE]>, // 128KB
 
     // Output buffer for decompressed data
-    output_buffer: Box<[u8; 131072]>, // 128KB
+    output_buffer: Box<[u8; BUFSIZE]>, // 128KB
     output_buffer_size: usize,
     output_buffer_pos: usize,
 
     file_offset: u64,
     multi_member: bool,
-    file_buffer: Option<Box<[u8]>>,
+    // file_buffer: Option<Box<[u8]>>,
 }
 
 impl GzipStreamReader {
@@ -179,8 +170,8 @@ impl GzipStreamReader {
         let mut zstream = ZStreamWrapper::new();
         zstream.init(-15)?;
 
-        let mut input_buffer = Box::new([0u8; 131072]);
-        let output_buffer = Box::new([0u8; 131072]);
+        let mut input_buffer = Box::new([0u8; BUFSIZE]);
+        let output_buffer = Box::new([0u8; BUFSIZE]);
 
         // Set the decompression dictionary FIRST (before any inflation)
         if checkpoint.out > 0 {
@@ -219,8 +210,8 @@ impl GzipStreamReader {
         }
 
         // Set up large FILE buffer for performance
-        let file_buffer_size = 256 * 1024; // 256KB
-        let file_buffer = vec![0u8; file_buffer_size].into_boxed_slice();
+        //let file_buffer_size = 256 * 1024; // 256KB
+        //let file_buffer = vec![0u8; file_buffer_size].into_boxed_slice();
 
         Ok(GzipStreamReader {
             file,
@@ -232,7 +223,7 @@ impl GzipStreamReader {
             output_buffer_pos: 0,
             file_offset,
             multi_member: true,
-            file_buffer: Some(file_buffer),
+            //file_buffer: Some(file_buffer),
         })
     }
 
@@ -596,7 +587,7 @@ pub fn example_usage(
     // Optionally disable multi-member checking for single-member files
     // reader.set_multi_member(false);
 
-    let mut buffer = vec![0u8; 131072]; // 128KB
+    let mut buffer = vec![0u8; BUFSIZE]; // 128KB
     let mut total_read = 0;
 
     loop {

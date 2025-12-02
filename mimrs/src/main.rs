@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 use mimrs::gzip_reader::GzipStreamReader;
-use mimrs::mim_types::{DeflateIndex, Point, RecordCheckpoint, deflate_index_load_gzip};
+use mimrs::mim_types::deflate_index_load_gzip;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
@@ -77,7 +77,7 @@ fn peek(args: &PeekCommand) -> anyhow::Result<()> {
         let record = r.expect("invalid record");
         println!(
             "@{}\n{}",
-            std::str::from_utf8(&record.id()).expect("failed to convert name"),
+            std::str::from_utf8(record.id()).expect("failed to convert name"),
             std::str::from_utf8(&record.seq()).expect("failed to convert seq")
         );
         idx += 1;
