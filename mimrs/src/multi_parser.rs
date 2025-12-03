@@ -14,6 +14,12 @@ pub struct ReadIter<'a> {
     niter: usize,
 }
 
+impl<'a> ReadIter<'a> {
+    pub fn new(reader: Box<dyn FastxReader + 'a>, niter: usize) -> Self {
+        Self { reader, niter }
+    }
+}
+
 impl<'this, 'lend> Lending<'lend> for ReadIter<'this> {
     type Lend = Result<SequenceRecord<'lend>, ParseError>;
 }

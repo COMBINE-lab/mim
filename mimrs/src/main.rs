@@ -2,7 +2,7 @@ use ::lender::prelude::*;
 use clap::{Args, Parser, Subcommand};
 use mimrs::gzip_reader::GzipStreamReader;
 use mimrs::mim_types::deflate_index_load_gzip;
-use mimrs::multi_parser::MultiParser;
+use mimrs::multi_parser::{MultiParser, ReadIter};
 use std::sync::Arc;
 
 use std::fs::File;
@@ -78,7 +78,6 @@ fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
             let wi = mp.get_worker_iter(t).expect("can get worker");
             let mut nucs = vec![0_usize; 4];
             for_!(rec in wi {
-            //while let Some(rec) = wi.next() {
                 let record = rec.expect("valid record");
                 record.seq().iter().for_each(|c| {
                     nucs[((*c as usize) >> 1) & 3] += 1;
@@ -107,9 +106,14 @@ fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
 }
 
 fn inspect_index(args: &InspectCommand) -> anyhow::Result<()> {
-    let file = File::open(&args.index_path).expect("File failed to open");
-    let index = deflate_index_load_gzip(file).expect("failed to load index");
-    println!("metadata = {:#?}", index.metadata_dict);
+    let file = File::open(&args.index_path)?;
+    let index = deflate_index_load_gzip(file)?;
+    println!("loaded mim index for : {:?}", args.index_path.as_path());
+    println!("metadata = {:?}", &index.metadata_dict);
+    println!(
+        "blake3 checksum = {}",
+        base16::encode_lower(&index.compressed_hash)
+    );
     println!("number of checkpoints = {}", index.have);
     Ok(())
 }
@@ -135,19 +139,15 @@ fn peek(args: &PeekCommand) -> anyhow::Result<()> {
         gzfq.read_exact(&mut discard_buf)?;
     }
 
-    let mut fastx_reader = needletail::parse_fastx_reader(gzfq).expect("invalid reader");
-    let mut idx = 0;
-    while let Some(r) = fastx_reader.next() {
+    let fastx_reader = needletail::parse_fastx_reader(gzfq).expect("invalid reader");
+    let mut ri = ReadIter::new(fastx_reader, args.nreads);
+    while let Some(r) = ri.next() {
         let record = r.expect("invalid record");
         println!(
             "@{}\n{}",
             std::str::from_utf8(record.id()).expect("failed to convert name"),
             std::str::from_utf8(&record.seq()).expect("failed to convert seq")
         );
-        idx += 1;
-        if idx > args.nreads {
-            break;
-        }
     }
     Ok(())
 }
@@ -166,21 +166,4 @@ fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs::File;
-
-    #[test]
-    fn test_load_index() {
-        // Example usage
-        let file = File::open("index.gz").expect("Failed to open file");
-        let index = deflate_index_load_gzip(file).expect("Failed to load index");
-
-        println!("Loaded index with {} access points", index.have);
-        println!("Total record count: {}", index.total_record_count);
-        println!("Uncompressed length: {}", index.length);
-    }
 }
