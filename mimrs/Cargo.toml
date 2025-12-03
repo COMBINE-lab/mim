@@ -8,7 +8,7 @@ anyhow = "1.0.100"
 clap = { version = "4.5.53", features = ["derive"] }
 flate2 = "1.0"
 libc = { version = "0.2.177", features = ["use_std"] }
-libz-ng-sys = "1.1.23"
+libz-rs-sys = "0.5.2"
 needletail = "0.6.3"
 serde_cbor = "0.11"
 

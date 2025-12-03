@@ -1,5 +1,5 @@
 use crate::mim_types::DeflateIndex;
-use libz_ng_sys::{
+use libz_rs_sys::{
     Z_BUF_ERROR, Z_NO_FLUSH, Z_OK, Z_STREAM_END, inflate, inflateEnd, inflatePrime, inflateReset,
     inflateSetDictionary, z_stream, zlibVersion,
 };
@@ -44,7 +44,7 @@ impl ZStreamWrapper {
 
         let ret = unsafe {
             let version = zlibVersion();
-            libz_ng_sys::inflateInit2_(
+            libz_rs_sys::inflateInit2_(
                 self.stream,
                 window_bits,
                 version,

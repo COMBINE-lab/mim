@@ -82,34 +82,42 @@ impl MultiParser {
     }
 
     pub fn get_worker_iter<'a>(&'a self, worker_id: usize) -> Result<ReadIter<'a>> {
-        let chunk_range = self.chunk_assignments[worker_id].clone();
-        let mut gzfq =
-            GzipStreamReader::open_at_checkpoint(&self.fpath, &self.index, chunk_range.start)
-                .expect("valid gzip stream reader");
+        if worker_id < self.nworker {
+            let chunk_range = self.chunk_assignments[worker_id].clone();
+            let mut gzfq =
+                GzipStreamReader::open_at_checkpoint(&self.fpath, &self.index, chunk_range.start)?;
 
-        let first_record_rank =
-            self.index.record_boundaries[chunk_range.start].first_record_in_chunk;
-        let record_offset = self.index.record_boundaries[chunk_range.start].byte_offset;
-        if record_offset > gzfq.uncompressed_offset() {
-            // discard the requisite number of bytes
-            let mut discard_buf = vec![0_u8; (record_offset - gzfq.uncompressed_offset()) as usize];
-            gzfq.read_exact(&mut discard_buf)?;
-        }
+            let first_record_rank =
+                self.index.record_boundaries[chunk_range.start].first_record_in_chunk;
+            let record_offset = self.index.record_boundaries[chunk_range.start].byte_offset;
+            if record_offset > gzfq.uncompressed_offset() {
+                // discard the requisite number of bytes
+                let mut discard_buf =
+                    vec![0_u8; (record_offset - gzfq.uncompressed_offset()) as usize];
+                gzfq.read_exact(&mut discard_buf)?;
+            }
 
-        let niter = if chunk_range.end >= self.index.record_boundaries.len() {
-            self.index.total_record_count as u64 - first_record_rank
+            let niter = if chunk_range.end >= self.index.record_boundaries.len() {
+                self.index.total_record_count as u64 - first_record_rank
+            } else {
+                let last_record_rank =
+                    self.index.record_boundaries[chunk_range.end].first_record_in_chunk;
+                last_record_rank - first_record_rank
+            };
+
+            let fastx_reader = needletail::parse_fastx_reader(gzfq).expect("invalid reader");
+
+            Ok(ReadIter {
+                reader: fastx_reader,
+                niter: niter as usize,
+            })
         } else {
-            let last_record_rank =
-                self.index.record_boundaries[chunk_range.end].first_record_in_chunk;
-            last_record_rank - first_record_rank
-        };
-
-        let fastx_reader = needletail::parse_fastx_reader(gzfq).expect("invalid reader");
-
-        Ok(ReadIter {
-            reader: fastx_reader,
-            niter: niter as usize,
-        })
+            anyhow::bail!(
+                "Requested work for worker {}, but only {} workers were registered.",
+                worker_id,
+                self.nworker
+            )
+        }
     }
 }
 
