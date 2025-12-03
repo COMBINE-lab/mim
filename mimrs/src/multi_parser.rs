@@ -8,35 +8,31 @@ use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-struct ReadIter<'a> {
+pub struct ReadIter<'a> {
     reader: Box<dyn FastxReader + 'a>,
     niter: usize,
 }
 
-impl<'a> Iterator for ReadIter<'a> {
-    type Item = Result<SequenceRecord<'_>, ParseError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl<'a> ReadIter<'a> {
+    pub fn next(&mut self) -> Option<Result<SequenceRecord<'_>, ParseError>> {
         if self.niter > 0 {
             self.niter -= 1;
-            if let Some(r) = self.reader.next() {
-                Some(r)
-            } else {
-                None
-            }
+            self.reader.next()
         } else {
             None
         }
     }
 }
 
-struct MultiParser {
+pub struct MultiParser {
     pub nworker: usize,
     pub fpath: PathBuf,
     pub ipath: PathBuf,
     pub chunk_assignments: Vec<Range<usize>>,
     pub index: DeflateIndex,
 }
+
+unsafe impl Send for MultiParser {}
 
 /// Distributes x chunks evenly across t threads.
 /// Returns a vector of ranges where each range represents the chunk indices
