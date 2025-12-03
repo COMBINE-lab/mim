@@ -67,6 +67,8 @@ fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
         args.nthreads,
     ));
 
+    let start = std::time::Instant::now();
+
     let mut threads = Vec::<JoinHandle<Vec<usize>>>::with_capacity(args.nthreads);
 
     for t in 0..args.nthreads {
@@ -96,6 +98,9 @@ fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
         "A: {}, C: {}, G: {}, T (or N): {}",
         nuc_hist[0], nuc_hist[1], nuc_hist[2], nuc_hist[3]
     );
+
+    eprintln!("took: {:?}", start.elapsed());
+
     Ok(())
 }
 
