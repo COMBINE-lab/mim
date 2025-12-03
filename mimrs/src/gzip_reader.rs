@@ -1,10 +1,10 @@
 use crate::mim_types::DeflateIndex;
-use libz_sys::{
+use libz_ng_sys::{
     Z_BUF_ERROR, Z_NO_FLUSH, Z_OK, Z_STREAM_END, inflate, inflateEnd, inflatePrime, inflateReset,
     inflateSetDictionary, z_stream, zlibVersion,
 };
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::ptr;
 
@@ -44,7 +44,7 @@ impl ZStreamWrapper {
 
         let ret = unsafe {
             let version = zlibVersion();
-            libz_sys::inflateInit2_(
+            libz_ng_sys::inflateInit2_(
                 self.stream,
                 window_bits,
                 version,
@@ -118,7 +118,7 @@ impl Drop for ZStreamWrapper {
 
 /// Reader for streaming decompression from a gzip checkpoint
 pub struct GzipStreamReader {
-    file: File,
+    file: BufReader<File>,
     zstream: ZStreamWrapper,
     uncompressed_offset: u64,
 
@@ -149,7 +149,18 @@ impl GzipStreamReader {
             ));
         }
 
-        let mut file = File::open(gz_file_path)?;
+        let file = File::open(gz_file_path)?;
+        let mut file = BufReader::new(file);
+
+        /*
+        const size_t file_buffer_size = 256 * 1024;  // 256KB
+        reader->file_buffer = new char[file_buffer_size];
+        if (setvbuf(gz_file, reader->file_buffer, _IOFBF, file_buffer_size) != 0) {
+            // setvbuf failed, continue without custom buffer (will hurt performance)
+            delete[] reader->file_buffer;
+            reader->file_buffer = nullptr;
+        }
+        */
 
         // Get the checkpoint
         let checkpoint = &index.list[checkpoint_index];

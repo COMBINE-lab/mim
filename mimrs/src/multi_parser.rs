@@ -13,6 +13,7 @@ pub struct ReadIter<'a> {
     niter: usize,
 }
 
+#[allow(clippy::should_implement_trait)]
 impl<'a> ReadIter<'a> {
     pub fn next(&mut self) -> Option<Result<SequenceRecord<'_>, ParseError>> {
         if self.niter > 0 {
@@ -96,7 +97,7 @@ impl MultiParser {
         }
 
         let niter = if chunk_range.end >= self.index.record_boundaries.len() {
-            self.index.total_record_count as u64 - first_record_rank as u64
+            self.index.total_record_count as u64 - first_record_rank
         } else {
             let last_record_rank =
                 self.index.record_boundaries[chunk_range.end].first_record_in_chunk;

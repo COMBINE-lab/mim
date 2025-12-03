@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand};
 use mimrs::gzip_reader::GzipStreamReader;
 use mimrs::mim_types::deflate_index_load_gzip;
 use mimrs::multi_parser::MultiParser;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use std::fs::File;
 use std::io::Read;
@@ -61,7 +61,7 @@ struct Cli {
 }
 
 fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
-    let mut mp = Arc::new(MultiParser::new_with_workers(
+    let mp = Arc::new(MultiParser::new_with_workers(
         &args.fastq_path,
         &args.index_path,
         args.nthreads,
@@ -74,7 +74,6 @@ fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
         threads.push(std::thread::spawn(move || {
             let mut wi = mp.get_worker_iter(t).expect("can get worker");
             let mut nucs = vec![0_usize; 4];
-            eprintln!("starting parsing with thread {t}");
             while let Some(rec) = wi.next() {
                 let record = rec.expect("valid record");
                 record.seq().iter().for_each(|c| {
@@ -85,7 +84,7 @@ fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
         }));
     }
 
-    let mut nuc_hist = vec![0_usize; 4];
+    let mut nuc_hist = [0_usize; 4];
     for t in threads {
         let loc_nuc = t.join().expect("valid join");
         for (i, c) in loc_nuc.iter().enumerate() {
