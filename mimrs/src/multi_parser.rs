@@ -1,5 +1,6 @@
 use crate::gzip_reader::GzipStreamReader;
 use crate::mim_types::{DeflateIndex, deflate_index_load_gzip};
+use ::lender::prelude::*;
 use anyhow::Result;
 use needletail::errors::ParseError;
 use needletail::parser::{FastxReader, SequenceRecord};
@@ -13,9 +14,13 @@ pub struct ReadIter<'a> {
     niter: usize,
 }
 
+impl<'this, 'lend> Lending<'lend> for ReadIter<'this> {
+    type Lend = Result<SequenceRecord<'lend>, ParseError>;
+}
+
 #[allow(clippy::should_implement_trait)]
-impl<'a> ReadIter<'a> {
-    pub fn next(&mut self) -> Option<Result<SequenceRecord<'_>, ParseError>> {
+impl<'this> Lender for ReadIter<'this> {
+    fn next(&mut self) -> Option<Lend<'_, Self>> {
         if self.niter > 0 {
             self.niter -= 1;
             self.reader.next()
@@ -81,7 +86,7 @@ impl MultiParser {
         }
     }
 
-    pub fn get_worker_stream<'a>(&'a self, worker_id: usize) -> Result<(usize, GzipStreamReader)> {
+    pub fn get_worker_stream(&self, worker_id: usize) -> Result<(usize, GzipStreamReader)> {
         if worker_id < self.nworker {
             let chunk_range = self.chunk_assignments[worker_id].clone();
             let mut gzfq =
@@ -121,7 +126,7 @@ impl MultiParser {
 
         Ok(ReadIter {
             reader: fastx_reader,
-            niter: niter as usize,
+            niter,
         })
     }
 }

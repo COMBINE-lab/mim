@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.100"
 clap = { version = "4.5.53", features = ["derive"] }
 flate2 = "1.0"
+lender = "0.4.2"
 libc = { version = "0.2.177", features = ["use_std"] }
 libz-rs-sys = "0.5.2"
 needletail = "0.6.3"

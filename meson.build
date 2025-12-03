@@ -5,7 +5,6 @@ project('mimindex', 'cpp',
     'cpp_std=c++17',
     'optimization=3',
     'cpp_args=-march=native',
-    'debug=true'
   ]
 )
 
@@ -20,7 +19,7 @@ opt.add_cmake_defines({
   'ZLIB_COMPAT': 'ON',           # Enable zlib compatibility mode
   'WITH_NATIVE_INSTRUCTIONS': 'ON', 
   'ZLIB_ENABLE_TESTS': 'OFF',    # Disable tests
-  'BUILD_SHARED_LIBS': 'OFF',    # Build static library
+  'BUILD_SHARED_LIBS': 'ON',    # Build static library
 })
 
 zlib_ng_proj = cmake.subproject('zlib-ng', options: opt)

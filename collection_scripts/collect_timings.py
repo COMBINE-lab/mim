@@ -29,7 +29,7 @@ def main(timing_dir):
     vbq_dir = "vbq"
     for tdir, dset, files in os.walk(timing_dir):
         td = tdir.split(os.path.sep)[-1]
-        if td == "vbq": continue
+        if td == "vbq" or td == "mimrs": continue
         if len(files) == 0:
             continue
         else:
@@ -50,7 +50,8 @@ def main(timing_dir):
                         total_sec = parse_simple(ifile)
                 dat.append((td, nt, total_sec, 'mim'))
     for tdir, dset, files in os.walk(timing_dir):
-        if not tdir.endswith("vbq"): continue 
+        if not (tdir.endswith("vbq") or tdir.endswith("mimrs")) : continue 
+        meth = tdir.split(os.path.sep)[-1]
         td = tdir.split(os.path.sep)[-2]
         for f in files:
             nt = nts = int(f.rstrip('.time'))
@@ -58,12 +59,12 @@ def main(timing_dir):
             print(f"{nt} :: {fname}")
             total_sec = 0.0
             with open(fname) as ifile:
-                if nt == 1 or nt == "cons" :
+                if nt == 1 or nt == "cons" or meth == "mimrs":
                     total_sec = parse_verbose(ifile)
                 else:
                     print(f"PARSE SIMPLE {fname}, {nt}")
                     total_sec = parse_simple(ifile)
-            dat.append((td, nt, total_sec, 'vbq'))
+            dat.append((td, nt, total_sec, meth))
 
     print(dat)
     df = pd.DataFrame(dat, columns = ['dataset', 'threads', 'time(s)', 'method'])
@@ -74,11 +75,13 @@ def main(timing_dir):
     val = df.columns.levels[0][0]    # 'time(s)'
 
     mim_threads = [1, 2, 4, 8, 12, 16, 20, 24, "cons"]
+    mim_rs_threads = [1, 2, 4, 8, 12, 16, 20, 24,]
     vbq_threads = [1, 2, 4, 8, 12, 16, 20, 24]
 
     # Build 3-level tuples
     desired = (
         [(val, t, "mim") for t in mim_threads] +
+        [(val, t, "mimrs") for t in mim_rs_threads] +
         [(val, t, "vbq") for t in vbq_threads]
     )
 
