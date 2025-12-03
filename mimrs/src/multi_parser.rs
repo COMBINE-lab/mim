@@ -81,7 +81,7 @@ impl MultiParser {
         }
     }
 
-    pub fn get_worker_iter<'a>(&'a self, worker_id: usize) -> Result<ReadIter<'a>> {
+    pub fn get_worker_stream<'a>(&'a self, worker_id: usize) -> Result<(usize, GzipStreamReader)> {
         if worker_id < self.nworker {
             let chunk_range = self.chunk_assignments[worker_id].clone();
             let mut gzfq =
@@ -105,12 +105,7 @@ impl MultiParser {
                 last_record_rank - first_record_rank
             };
 
-            let fastx_reader = needletail::parse_fastx_reader(gzfq).expect("invalid reader");
-
-            Ok(ReadIter {
-                reader: fastx_reader,
-                niter: niter as usize,
-            })
+            Ok((niter as usize, gzfq))
         } else {
             anyhow::bail!(
                 "Requested work for worker {}, but only {} workers were registered.",
@@ -118,6 +113,16 @@ impl MultiParser {
                 self.nworker
             )
         }
+    }
+
+    pub fn get_worker_iter<'a>(&'a self, worker_id: usize) -> Result<ReadIter<'a>> {
+        let (niter, stream) = self.get_worker_stream(worker_id)?;
+        let fastx_reader = needletail::parse_fastx_reader(stream).expect("invalid reader");
+
+        Ok(ReadIter {
+            reader: fastx_reader,
+            niter: niter as usize,
+        })
     }
 }
 
