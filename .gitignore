@@ -34,7 +34,9 @@
 test-data
 *gzip*
 *index*
+!mimrs/src/indexer.rs
 !include/zran_index_helpers.hpp
+!mimrs/src/indexer.rs
 .vscode
 
 data/*
