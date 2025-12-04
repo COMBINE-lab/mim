@@ -31,6 +31,9 @@
 *.out
 *.app
 
+# Rust
+/mimrs/target/.rustc_info.json
+
 test-data
 *gzip*
 *index*
