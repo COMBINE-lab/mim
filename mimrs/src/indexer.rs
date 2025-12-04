@@ -7,7 +7,6 @@ use libz_rs_sys::{self as zlib};
 use needletail::parse_fastx_file;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::path::Path;
@@ -269,11 +268,7 @@ fn handle_gzip_member_boundary<R: Read>(
 
         trace!(
             "Z_STREAM_END detected: avail_in={}, peek={}, has_more={}, beg={}, totout={}",
-            state.strm.avail_in,
-            has_peek,
-            has_more_data,
-            state.beg,
-            state.totout
+            state.strm.avail_in, has_peek, has_more_data, state.beg, state.totout
         );
 
         if has_more_data {
@@ -357,7 +352,9 @@ fn deflate_index_build<R: Read>(
         }
 
         // Check if we should add an access point
-        if (state.strm.data_type & 0xc0) == 0x80 && (index.have == 0 || state.totout - state.last >= span) {
+        if (state.strm.data_type & 0xc0) == 0x80
+            && (index.have == 0 || state.totout - state.last >= span)
+        {
             let in_offset = state.totin - state.strm.avail_in as i64;
             add_point(
                 &mut index,
