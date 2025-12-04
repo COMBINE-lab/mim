@@ -90,8 +90,14 @@ You can use the `inspect` command to inspect an existing `mim` index:
 
 ### Compiling
 
+The implementation in this repository use the [meson](https://mesonbuild.com/) build system, so you'll need `meson` installed, and [`ninja`](https://ninja-build.org/). Additionally, the current reference implementation is written in `C++`, so you'll need a `C++` compiler (at least capable of `C++17`). The implementation lives under the `cpp` directory, so first, change into that.
 
-The implementation in this repository use the [meson](https://mesonbuild.com/) build system, so you'll need `meson` installed, and [`ninja`](https://ninja-build.org/). Additionally, the current reference implementation is written in `C++`, so you'll need a `C++` compiler (at least capable of `C++17`).
+```
+cd cpp
+```
+
+Then you can build the executables
+
 
 ```
 # Setup build directory
