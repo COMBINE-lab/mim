@@ -32,7 +32,8 @@
 *.app
 
 # Rust
-/mimrs/target/.rustc_info.json
+mimrs/target/.rustc_info.json
+mimrs/target/*
 
 test-data
 *gzip*
