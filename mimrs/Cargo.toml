@@ -6,14 +6,18 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.100"
 base16 = "0.2.1"
+blake3 = "1.8.2"
 clap = { version = "4.5.53", features = ["derive"] }
 flate2 = "1.0"
 lender = "0.4.2"
 libc = { version = "0.2.177", features = ["use_std"] }
 libz-rs-sys = "0.5.2"
 needletail = "0.6.3"
+serde = { version = "1.0.228", features = ["derive"] }
 serde_cbor = "0.11"
 serde_json = { version = "1.0.145", features = ["indexmap", "preserve_order"] }
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
 [profile.release-with-debug]
 inherits = "release"

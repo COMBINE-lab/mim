@@ -1,9 +1,12 @@
 use ::lender::prelude::*;
 use clap::{Args, Parser, Subcommand};
 use mimrs::gzip_reader::GzipStreamReader;
+use mimrs::indexer;
 use mimrs::mim_types::deflate_index_load_gzip;
 use mimrs::multi_parser::{MultiParser, ReadIter};
+use std::io;
 use std::sync::Arc;
+use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 
 use std::fs::File;
 use std::io::Read;
@@ -18,12 +21,33 @@ enum Commands {
     Peek(PeekCommand),
     /// print some reads
     NucHist(NucHistCommand),
+    /// print some reads
+    Build(BuildCommand),
 }
 
 #[derive(Args, Debug)]
 struct InspectCommand {
     /// path to index
     pub index_path: PathBuf,
+}
+
+#[derive(Args, Debug)]
+struct BuildCommand {
+    /// path to fastx gz input
+    #[arg(short, long)]
+    pub fastq_path: PathBuf,
+
+    /// optional output path
+    #[arg(short, long)]
+    pub index_path: Option<PathBuf>,
+
+    /// span
+    #[arg(short, long, default_value_t = 32_000_000)]
+    pub span: usize,
+
+    /// optional metadata
+    #[arg(short, long)]
+    pub metadata: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -105,11 +129,33 @@ fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn build_index(args: &BuildCommand) -> anyhow::Result<()> {
+    let user_metadata = args
+        .metadata
+        .clone()
+        .map(|s| serde_json::from_str(&s).expect("metadata must be valid json"));
+    indexer::build_index(
+        &args.fastq_path,
+        args.span as i64,
+        user_metadata,
+        args.index_path.as_ref(),
+    )?;
+    Ok(())
+}
+
 fn inspect_index(args: &InspectCommand) -> anyhow::Result<()> {
     let file = File::open(&args.index_path)?;
     let index = deflate_index_load_gzip(file)?;
+    let metadata_dict: serde_cbor::Value =
+        serde_cbor::from_slice(&index.metadata_dict).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("CBOR parse error: {}", e),
+            )
+        })?;
+
     println!("loaded mim index for : {:?}", args.index_path.as_path());
-    println!("metadata = {:?}", &index.metadata_dict);
+    println!("metadata = {:?}", &metadata_dict);
     println!(
         "blake3 checksum = {}",
         base16::encode_lower(&index.compressed_hash)
@@ -153,6 +199,19 @@ fn peek(args: &PeekCommand) -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+    let (filtered_layer, _reload_handle) = tracing_subscriber::reload::Layer::new(env_filter);
+
+    // set up the logging.  Here we will take the
+    // logging level from the environment variable if
+    // it is set.  Otherwise, we'll set the default
+    tracing_subscriber::registry()
+        // log level to INFO.
+        .with(fmt::layer().with_writer(io::stderr))
+        .with(filtered_layer)
+        .init();
     let cli = Cli::try_parse()?;
     match cli.commands {
         Commands::Inspect(ref inspect_args) => {
@@ -163,6 +222,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::NucHist(ref hist_args) => {
             nuc_hist(hist_args)?;
+        }
+        Commands::Build(ref build_args) => {
+            build_index(build_args)?;
         }
     }
     Ok(())

@@ -1,9 +1,8 @@
 use flate2::read::GzDecoder;
-use serde_cbor::Value as CborValue;
 use std::io::{Error, ErrorKind, Read, Result};
 
-const BLAKE3_OUT_LEN: usize = 32;
-const MIMINDEX_STR: &str = "MIMINDEX";
+pub(crate) const BLAKE3_OUT_LEN: usize = 32;
+pub(crate) const MIMINDEX_STR: &str = "MIMINDEX";
 
 /// Access point structure
 #[derive(Debug, Clone)]
@@ -25,11 +24,11 @@ pub struct RecordCheckpoint {
 /// Deflate index structure
 #[derive(Debug)]
 pub struct DeflateIndex {
-    pub metadata_dict: CborValue, // CBOR blob (deserialized)
-    pub have: i32,                // number of access points
-    pub mode: i32,                // -15 for raw, 15 for zlib, 31 for gzip
-    pub length: i64,              // total length of uncompressed data
-    pub list: Vec<Point>,         // list of access points
+    pub metadata_dict: Vec<u8>, // CBOR blob (deserialized)
+    pub have: i32,              // number of access points
+    pub mode: i32,              // -15 for raw, 15 for zlib, 31 for gzip
+    pub length: i64,            // total length of uncompressed data
+    pub list: Vec<Point>,       // list of access points
     pub record_boundaries: Vec<RecordCheckpoint>,
     pub num_record_chunks: i64,
     pub total_record_count: i64,
@@ -92,8 +91,6 @@ pub fn deflate_index_load_gzip<R: Read>(reader: R) -> Result<DeflateIndex> {
 
     // Read metadata_dict as CBOR
     let metadata_bytes: Vec<u8> = read_vector(&mut gz)?;
-    let metadata_dict = serde_cbor::from_slice(&metadata_bytes)
-        .map_err(|e| Error::new(ErrorKind::InvalidData, format!("CBOR parse error: {}", e)))?;
 
     // Read basic fields
     let mode: i32 = read_scalar(&mut gz)?;
@@ -133,7 +130,7 @@ pub fn deflate_index_load_gzip<R: Read>(reader: R) -> Result<DeflateIndex> {
     let total_record_count: i64 = read_scalar(&mut gz)?;
 
     Ok(DeflateIndex {
-        metadata_dict,
+        metadata_dict: metadata_bytes,
         have,
         mode,
         length,
