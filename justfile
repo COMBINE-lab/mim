@@ -2,17 +2,17 @@
 f:= "~/git/eth/data/legionella.fastq.gz"
 
 build:
-    ninja -C builddir
+    cd cpp && ninja -C builddir
 index:
-    ./builddir/mimindex build $d/legionella.fastq.gz
+    cd cpp && ./builddir/mimindex build $d/legionella.fastq.gz
 run-mim-12:
-    time ./builddir/test_mim_parser 12 {{f}} {{f}}.mim 
+    cd cpp && time ./builddir/test_mim_parser 12 {{f}} {{f}}.mim 
 run-mim-6:
-    time ./builddir/test_mim_parser 6 {{f}} {{f}}.mim 
+    cd cpp && time ./builddir/test_mim_parser 6 {{f}} {{f}}.mim 
 run-mim-1:
-    time ./builddir/test_mim_parser 1 {{f}} {{f}}.mim 
+    cd cpp && time ./builddir/test_mim_parser 1 {{f}} {{f}}.mim 
 run-serial:
-    time ./builddir/test_serial_parser {{f}}
+    cd cpp && time ./builddir/test_serial_parser {{f}}
 
 run-mimrs-12:
     cd mimrs && time ./target/release/mimrs nuc-hist {{f}} {{f}}.mim 12
