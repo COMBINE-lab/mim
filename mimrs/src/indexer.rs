@@ -23,28 +23,29 @@ const RAW: i32 = -15;
 const ZLIB: i32 = 15;
 const GZIP: i32 = 31;
 
-// Wrapper around Read that allows peeking
+// Wrapper around Read that allows peeking a single byte
 struct PeekableReader<R: Read> {
     inner: R,
-    buffer: VecDeque<u8>,
+    buffer: [u8; 1],
+    is_buffered: bool,
 }
 
 impl<R: Read> PeekableReader<R> {
     fn new(inner: R) -> Self {
         Self {
             inner,
-            buffer: VecDeque::new(),
+            buffer: [0_u8],
+            is_buffered: false,
         }
     }
 
     fn peek_byte(&mut self) -> io::Result<Option<u8>> {
-        if self.buffer.is_empty() {
-            let mut byte = [0u8; 1];
-            match self.inner.read(&mut byte)? {
+        if !self.is_buffered {
+            match self.inner.read(&mut self.buffer)? {
                 0 => Ok(None),
                 _ => {
-                    self.buffer.push_back(byte[0]);
-                    Ok(Some(byte[0]))
+                    self.is_buffered = true;
+                    Ok(Some(self.buffer[0]))
                 }
             }
         } else {
@@ -57,10 +58,11 @@ impl<R: Read> Read for PeekableReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut total = 0;
 
-        // First drain any buffered bytes
-        while total < buf.len() && !self.buffer.is_empty() {
-            buf[total] = self.buffer.pop_front().unwrap();
+        // First use the buffered byte if we have it
+        if self.is_buffered {
+            buf[total] = self.buffer[0];
             total += 1;
+            self.is_buffered = false;
         }
 
         // Then read from inner if we need more
@@ -218,9 +220,9 @@ fn deflate_index_build<R: Read>(
 
     let mut ret: i32 = zlib::Z_OK;
 
-    // Main decompression loop - matches C++ do-while (ret == Z_OK)
+    // Main decompression loop - matches do-while (ret == Z_OK) in the C++ implementation
     'main_loop: loop {
-        // Assure available input - only read when we've consumed all previous input
+        // Assure available input, only read when we've consumed all previous input
         if strm.avail_in == 0 {
             let bytes_read = reader.read(&mut buf)?;
 
@@ -233,7 +235,7 @@ fn deflate_index_build<R: Read>(
                     );
                 }
 
-                // Hash what we just read - this is what will be decompressed
+                // Hash what we just read, this is what will be decompressed
                 hasher.update(&buf[..bytes_read]);
                 totin += bytes_read as i64;
             }
@@ -260,6 +262,7 @@ fn deflate_index_build<R: Read>(
                         std::mem::size_of::<zlib::z_stream>() as i32,
                     )
                 };
+                // if we failed the inflateInit2_ call, then break
                 if ret != zlib::Z_OK {
                     break 'main_loop;
                 }
@@ -285,16 +288,20 @@ fn deflate_index_build<R: Read>(
             totout += produced;
 
             // NOTE: Tracking: https://github.com/trifectatechfoundation/zlib-rs/issues/439
+            // this *does not* seem to be necessary any longer, but I'm keeping it here just for
+            // now.
             // Handle Z_DATA_ERROR that occurs at gzip member boundaries
             // When using Z_BLOCK mode with concatenated gzip files, inflate() can return
             // Z_DATA_ERROR when it encounters the length check at the end of a member,
             // especially if the member boundary doesn't align with a block boundary.
             // If we produced no output and we're in GZIP mode, treat this as Z_STREAM_END
             // to allow processing of the next member.
+            /*
             if ret == zlib::Z_DATA_ERROR && mode == GZIP && produced == 0 {
                 // This is likely a member boundary issue, treat as end of stream
                 ret = zlib::Z_STREAM_END;
             }
+            */
         }
 
         // Check if we should add an access point
@@ -331,13 +338,12 @@ fn deflate_index_build<R: Read>(
                 if ret != zlib::Z_OK {
                     break 'main_loop;
                 }
-                beg = totout; // Reset history - CRITICAL!
+                beg = totout; // Reset history 
                 trace!("Reset beg to {}", beg);
             }
         }
 
         // Keep going until Z_STREAM_END or error
-        // The C++ code's loop is: do { ... } while (ret == Z_OK);
         if ret != zlib::Z_OK {
             break 'main_loop;
         }
@@ -372,205 +378,6 @@ fn deflate_index_build<R: Read>(
 
     Ok(index)
 }
-
-/*
-/// Build a deflate index from a gzip file using raw zlib API
-fn deflate_index_build_zlibng<R: Read>(
-    reader: &mut PeekableReader<R>,
-    span: i64,
-) -> Result<DeflateIndex, IndexError> {
-    let mut hasher = Hasher::new();
-    let mut index = DeflateIndex::new();
-
-    let mut buf = [0u8; CHUNK];
-    let mut window = [0u8; WINSIZE];
-    let mut totin: i64 = 0;
-    let mut totout: i64 = 0;
-    let mut beg: i64 = 0;
-    let mut mode: i32 = 0;
-    let mut last: i64 = 0;
-
-    // Initialize z_stream
-    // let mut strm: zlib::z_stream = unsafe { std::mem::zeroed() };
-    let layout = std::alloc::Layout::new::<z_stream>();
-    let ptr = unsafe { std::alloc::alloc_zeroed(layout) as *mut z_stream };
-    let mut strm = unsafe { &mut (*ptr) };
-
-    //strm.zalloc = None;
-    //strm.zfree = None;
-    strm.opaque = ptr::null_mut();
-    strm.avail_in = 0;
-    strm.next_in = ptr::null_mut();
-
-    let mut ret: i32 = zlib::Z_OK;
-
-    // Main decompression loop - matches C++ do-while (ret == Z_OK)
-    'main_loop: loop {
-        // Assure available input - only read when we've consumed all previous input
-        if strm.avail_in == 0 {
-            let bytes_read = reader.read(&mut buf)?;
-
-            if bytes_read > 0 {
-                // Check if this looks like a new gzip member header
-                if bytes_read >= 2 && buf[0] == 0x1f && buf[1] == 0x8b {
-                    eprintln!(
-                        "Read new gzip header at totin={}, totout={}, checkpoint={}",
-                        totin, totout, index.have
-                    );
-                }
-
-                // Hash what we just read - this is what will be decompressed
-                hasher.update(&buf[..bytes_read]);
-                totin += bytes_read as i64;
-            }
-
-            strm.avail_in = bytes_read as u32;
-            strm.next_in = buf.as_mut_ptr();
-
-            if mode == 0 && bytes_read > 0 {
-                // Determine the compression mode
-                mode = if buf[0] & 0x0f == 8 {
-                    ZLIB
-                } else if buf[0] == 0x1f {
-                    GZIP
-                } else {
-                    RAW
-                };
-
-                // Initialize inflation
-                ret = unsafe {
-                    zlib::inflateInit2_(
-                        &mut *strm,
-                        mode,
-                        zlib::zlibVersion(),
-                        std::mem::size_of::<zlib::z_stream>() as i32,
-                    )
-                };
-                if ret != zlib::Z_OK {
-                    break 'main_loop;
-                }
-            }
-        }
-
-        // Assure available output
-        if strm.avail_out == 0 {
-            strm.avail_out = WINSIZE as u32;
-            strm.next_out = window.as_mut_ptr();
-        }
-
-        // Handle special case for RAW mode at the start
-        if mode == RAW && index.have == 0 {
-            // For raw deflate, set data_type to simulate end of header
-            strm.data_type = 0x80;
-        } else {
-            // Inflate and update uncompressed bytes
-            let before = strm.avail_out as i64;
-            ret = unsafe { zlib::inflate(&mut *strm, zlib::Z_BLOCK) };
-            let after = strm.avail_out as i64;
-            let produced = before - after;
-            totout += produced;
-
-            // Special handling for Z_DATA_ERROR with "incorrect length check"
-            // This can happen at gzip member boundaries in concatenated gzip files
-            if ret == zlib::Z_DATA_ERROR && mode == GZIP && produced == 0 {
-                // Check if this is a length check error at end of member
-                let msg = unsafe {
-                    if !strm.msg.is_null() {
-                        std::ffi::CStr::from_ptr(strm.msg).to_str().unwrap_or("")
-                    } else {
-                        ""
-                    }
-                };
-
-                if msg.contains("incorrect length") {
-                    eprintln!(
-                        "WARNING: Got 'incorrect length check' at member boundary, treating as Z_STREAM_END"
-                    );
-                    eprintln!(
-                        "  at totin={}, totout={}, avail_in={}",
-                        totin, totout, strm.avail_in
-                    );
-                    // Treat this as end of stream and try to recover
-                    ret = zlib::Z_STREAM_END;
-                }
-            }
-        }
-
-        // Check if we should add an access point
-        if (strm.data_type & 0xc0) == 0x80 && (index.have == 0 || totout - last >= span) {
-            // We're at the end of a header or a non-last deflate block
-            let in_offset = totin - strm.avail_in as i64;
-            add_point(&mut index, in_offset, totout, beg, &window, &strm, span)?;
-            last = totout;
-        }
-
-        // Handle end of gzip member - check for concatenated gzip streams
-        // IMPORTANT: This happens BEFORE we check the loop condition
-        if ret == zlib::Z_STREAM_END && mode == GZIP {
-            // Check if there's more data: either in buffer or by peeking into file
-            let has_avail = strm.avail_in > 0;
-            let has_peek = if !has_avail {
-                reader.peek_byte()?.is_some()
-            } else {
-                false
-            };
-            let has_more_data = has_avail || has_peek;
-
-            eprintln!(
-                "Z_STREAM_END detected: avail_in={}, peek={}, has_more={}, beg={}, totout={}",
-                strm.avail_in, has_peek, has_more_data, beg, totout
-            );
-
-            if has_more_data {
-                // There is more input after the end of a gzip member
-                // Reset the inflate state to read another gzip member
-                // On success, this sets ret back to Z_OK to continue decompressing
-                ret = unsafe { zlib::inflateReset2(&mut *strm, GZIP) };
-                eprintln!("Called inflateReset2, ret={}", ret);
-                if ret != zlib::Z_OK {
-                    break 'main_loop;
-                }
-                beg = totout; // Reset history - CRITICAL!
-                eprintln!("Reset beg to {}", beg);
-            }
-        }
-
-        // Keep going until Z_STREAM_END or error
-        // The C++ code's loop is: do { ... } while (ret == Z_OK);
-        if ret != zlib::Z_OK {
-            break 'main_loop;
-        }
-    }
-
-    unsafe {
-        zlib::inflateEnd(&mut *strm);
-    }
-
-    if ret != zlib::Z_STREAM_END {
-        return match ret {
-            zlib::Z_NEED_DICT => Err(IndexError::DataError),
-            zlib::Z_MEM_ERROR => Err(IndexError::OutOfMemory),
-            zlib::Z_BUF_ERROR => Err(IndexError::PrematureEnd),
-            _ => Err(IndexError::ZlibError(ret)),
-        };
-    }
-
-    // Finalize hash
-    let hash = hasher.finalize();
-    index.compressed_hash.copy_from_slice(hash.as_bytes());
-
-    println!("BLAKE3 checksum:");
-    for byte in hash.as_bytes() {
-        print!("{:02x}", byte);
-    }
-    println!();
-
-    index.mode = mode;
-    index.length = totout;
-
-    Ok(index)
-}
-*/
 
 /// Build index from a gzip file with FASTQ record tracking
 pub fn build_index<P: AsRef<Path>>(
