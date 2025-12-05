@@ -511,7 +511,7 @@ pub fn build_index<P: AsRef<Path>>(
         .map(|s| s.as_ref().to_owned())
         .unwrap_or_else(|| {
             let pb = std::path::PathBuf::from(gzip_file.as_ref());
-            pb.with_additional_extension("mim")
+            pb.with_additional_extension(".mim")
         })
         .clone();
 
