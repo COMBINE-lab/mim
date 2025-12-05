@@ -1,5 +1,6 @@
 use crate::mim_types::{BLAKE3_OUT_LEN, DeflateIndex, MIMINDEX_STR, Point, RecordCheckpoint};
 use blake3::Hasher;
+use path_tools::WithAdditionalExtension;
 //use libz_ng_sys::z_stream;
 //use libz_ng_sys::{self as zlib, Z_OK};
 
@@ -510,7 +511,7 @@ pub fn build_index<P: AsRef<Path>>(
         .map(|s| s.as_ref().to_owned())
         .unwrap_or_else(|| {
             let pb = std::path::PathBuf::from(gzip_file.as_ref());
-            pb.with_extension("mim")
+            pb.with_additional_extension("mim")
         })
         .clone();
 

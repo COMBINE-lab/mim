@@ -13,6 +13,7 @@ lender = "0.4.2"
 libc = { version = "0.2.177", features = ["use_std"] }
 libz-rs-sys = "0.5.3"
 needletail = "0.6.3"
+path-tools = "0.1.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_cbor = "0.11"
 serde_json = { version = "1.0.145", features = ["indexmap", "preserve_order"] }
