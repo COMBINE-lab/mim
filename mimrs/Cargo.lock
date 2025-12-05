@@ -243,6 +243,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfe33edd8e85a12a67454e37f8c75e730830d83e313556ab9ebf9ee7fbeb3bfb"
 dependencies = [
  "crc32fast",
+ "libz-rs-sys",
  "miniz_oxide",
 ]
 
