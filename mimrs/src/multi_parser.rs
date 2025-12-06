@@ -4,7 +4,7 @@ use anyhow::Result;
 use lender::prelude::*;
 use needletail::errors::ParseError;
 use needletail::parser::{FastxReader, SequenceRecord};
-use paraseq::fastx::{Reader, RecordSet};
+//use paraseq::fastx::{Reader, RecordSet};
 use std::fs::File;
 use std::io::Read;
 use std::ops::Range;
@@ -16,7 +16,7 @@ pub struct ReadIter<'a> {
     // record_set: RecordSet,
     // idx: usize,
     niter: usize,
-    // _phantom: &'a (),
+    //_phantom: std::marker::PhantomData<&'a ()>,
 }
 
 impl<'a> ReadIter<'a> {
@@ -139,6 +139,7 @@ impl MultiParser {
         Ok(ReadIter {
             reader: fastx_reader,
             niter,
+            //_phantom: std::marker::PhantomData,
         })
     }
 }
