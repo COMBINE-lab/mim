@@ -349,7 +349,23 @@ fn deflate_index_build<R: Read>(
             let before = state.strm.avail_out as i64;
             ret = state.inflate(zlib::Z_BLOCK);
             let after = state.strm.avail_out as i64;
-            state.totout += before - after;
+            let produced = before - after;
+            state.totout += produced;
+            // NOTE: Tracking: https://github.com/trifectatechfoundation/zlib-rs/issues/439
+            // this *does not* seem to be necessary any longer, but I'm keeping it here just for
+            // now.
+            // Handle Z_DATA_ERROR that occurs at gzip member boundaries
+            // When using Z_BLOCK mode with concatenated gzip files, inflate() can return
+            // Z_DATA_ERROR when it encounters the length check at the end of a member,
+            // especially if the member boundary doesn't align with a block boundary.
+            // If we produced no output and we're in GZIP mode, treat this as Z_STREAM_END
+            // to allow processing of the next member.
+
+            if ret == zlib::Z_DATA_ERROR && state.mode == GZIP && produced == 0 {
+                // This is likely a member boundary issue, treat as end of stream
+                ret = zlib::Z_STREAM_END;
+                trace!("HERE");
+            }
         }
 
         // Check if we should add an access point

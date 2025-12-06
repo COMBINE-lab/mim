@@ -1,5 +1,5 @@
 use crate::gzip_reader::GzipStreamReader;
-use crate::mim_types::{deflate_index_load_gzip, DeflateIndex};
+use crate::mim_types::{DeflateIndex, deflate_index_load_gzip};
 use anyhow::Result;
 use lender::prelude::*;
 use needletail::errors::ParseError;
@@ -11,8 +11,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 pub struct ReadIter<'a> {
-    // reader: Box<dyn FastxReader + 'a>,
-    reader: Reader<GzipStreamReader>,
+    reader: Box<dyn FastxReader + 'a>,
+    //reader: Reader<GzipStreamReader>,
     // record_set: RecordSet,
     // idx: usize,
     niter: usize,
@@ -133,8 +133,8 @@ impl MultiParser {
 
     pub fn get_worker_iter<'a>(&'a self, worker_id: usize) -> Result<ReadIter<'a>> {
         let (niter, stream) = self.get_worker_stream(worker_id)?;
-        let fastx_reader = paraseq::fastx::Reader::new(stream).unwrap();
-        // let fastx_reader = needletail::parse_fastx_reader(stream).expect("invalid reader");
+        //let fastx_reader = paraseq::fastx::Reader::new(stream).unwrap();
+        let fastx_reader = needletail::parse_fastx_reader(stream).expect("invalid reader");
 
         Ok(ReadIter {
             reader: fastx_reader,
