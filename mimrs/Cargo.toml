@@ -15,10 +15,12 @@ libz-rs-sys = "0.5.3"
 needletail = "0.6.3"
 path-tools = "0.1.0"
 serde = { version = "1.0.228", features = ["derive"] }
+paraseq = "0.4.3"
 serde_cbor = "0.11"
 serde_json = { version = "1.0.145", features = ["indexmap", "preserve_order"] }
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+parking_lot = "0.12.5"
 
 [profile.release-with-debug]
 inherits = "release"
