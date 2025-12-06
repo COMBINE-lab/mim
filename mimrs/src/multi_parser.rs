@@ -2,39 +2,44 @@ use crate::gzip_reader::GzipStreamReader;
 use crate::mim_types::{deflate_index_load_gzip, DeflateIndex};
 use anyhow::Result;
 use lender::prelude::*;
-use needletail::errors::ParseError;
-use needletail::parser::{FastxReader, SequenceRecord};
+// use needletail::errors::ParseError;
+// use needletail::parser::{FastxReader, SequenceRecord};
 use paraseq::fastx::{Reader, RecordSet};
 use std::fs::File;
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-pub struct ReadIter<'a> {
+pub struct ReadIter {
     // reader: Box<dyn FastxReader + 'a>,
     reader: Reader<GzipStreamReader>,
-    // record_set: RecordSet,
-    // idx: usize,
+    record_set: RecordSet,
     niter: usize,
-    // _phantom: &'a (),
 }
 
-impl<'a> ReadIter<'a> {
-    pub fn new(reader: Box<dyn FastxReader + 'a>, niter: usize) -> Self {
-        Self { reader, niter }
+impl ReadIter {
+    pub fn new(reader: Reader<GzipStreamReader>, niter: usize) -> Self {
+        let record_set = reader.new_record_set();
+        Self {
+            reader,
+            niter,
+            record_set,
+        }
     }
 }
 
-impl<'this, 'lend> Lending<'lend> for ReadIter<'this> {
-    type Lend = Result<SequenceRecord<'lend>, ParseError>;
+impl<'lend> Lending<'lend> for ReadIter {
+    // type Lend = Result<SequenceRecord<'lend>, ParseError>;
+    type Lend = Result<paraseq::fastx::RefRecord<'lend>>;
 }
 
 #[allow(clippy::should_implement_trait)]
-impl<'this> Lender for ReadIter<'this> {
+impl Lender for ReadIter {
     fn next(&mut self) -> Option<Lend<'_, Self>> {
         if self.niter > 0 {
             self.niter -= 1;
-            self.reader.next()
+            // FIXME: We want to store both a (pinned?) record set and an iterator over it.
+            self.record_set.iter()
         } else {
             None
         }
@@ -131,15 +136,12 @@ impl MultiParser {
         }
     }
 
-    pub fn get_worker_iter<'a>(&'a self, worker_id: usize) -> Result<ReadIter<'a>> {
+    pub fn get_worker_iter<'a>(&'a self, worker_id: usize) -> Result<ReadIter> {
         let (niter, stream) = self.get_worker_stream(worker_id)?;
         let fastx_reader = paraseq::fastx::Reader::new(stream).unwrap();
         // let fastx_reader = needletail::parse_fastx_reader(stream).expect("invalid reader");
 
-        Ok(ReadIter {
-            reader: fastx_reader,
-            niter,
-        })
+        Ok(ReadIter::new(fastx_reader, niter))
     }
 }
 
