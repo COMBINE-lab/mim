@@ -9,6 +9,7 @@ use std::fs::File;
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use tracing::trace;
 
 pub struct ReadIter<'a> {
     reader: Box<dyn FastxReader + 'a>,
@@ -129,6 +130,57 @@ impl MultiParser {
                 self.nworker
             )
         }
+    }
+
+    /// returns a reader that only reads a specific number of bytes
+    pub fn get_worker_stream_by_bytes(
+        &self,
+        worker_id: usize,
+    ) -> Result<(usize, std::io::Take<GzipStreamReader>)> {
+        if worker_id < self.nworker {
+            let chunk_range = self.chunk_assignments[worker_id].clone();
+            let mut gzfq =
+                GzipStreamReader::open_at_checkpoint(&self.fpath, &self.index, chunk_range.start)?;
+
+            let _first_record_rank =
+                self.index.record_boundaries[chunk_range.start].first_record_in_chunk;
+            let record_offset = self.index.record_boundaries[chunk_range.start].byte_offset;
+            if record_offset > gzfq.uncompressed_offset() {
+                // discard the requisite number of bytes
+                let mut discard_buf =
+                    vec![0_u8; (record_offset - gzfq.uncompressed_offset()) as usize];
+                gzfq.read_exact(&mut discard_buf)?;
+            }
+
+            let nbytes = if chunk_range.end >= self.index.record_boundaries.len() {
+                self.index.length as u64 - record_offset
+            } else {
+                let last_record_offset = self.index.record_boundaries[chunk_range.end].byte_offset;
+                last_record_offset - record_offset
+            };
+
+            Ok((nbytes as usize, gzfq.take(nbytes)))
+        } else {
+            anyhow::bail!(
+                "Requested work for worker {}, but only {} workers were registered.",
+                worker_id,
+                self.nworker
+            )
+        }
+    }
+
+    pub fn get_needletail_parser_for_worker<'a>(
+        &'a self,
+        worker_id: usize,
+    ) -> Result<Box<dyn FastxReader + 'a>, ParseError> {
+        let (nbytes, byte_limited_stream) = self
+            .get_worker_stream_by_bytes(worker_id)
+            .unwrap_or_else(|_| {
+                panic!("could not get byte-limited stream for workder {worker_id}")
+            });
+        trace!("Worker {worker_id} will yield {nbytes} total uncompressed bytes");
+        //let fastx_reader = paraseq::fastx::Reader::new(stream).unwrap();
+        needletail::parse_fastx_reader(byte_limited_stream)
     }
 
     pub fn get_worker_iter<'a>(&'a self, worker_id: usize) -> Result<ReadIter<'a>> {

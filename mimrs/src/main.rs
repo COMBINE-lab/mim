@@ -99,14 +99,16 @@ fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
     for t in 0..args.nthreads {
         let mp = mp.clone();
         threads.push(std::thread::spawn(move || {
-            let wi = mp.get_worker_iter(t).expect("can get worker");
+            let mut wp = mp
+                .get_needletail_parser_for_worker(t)
+                .expect("can get worker");
             let mut nucs = vec![0_usize; 4];
-            for_!(rec in wi {
+            while let Some(rec) = wp.next() {
                 let record = rec.expect("valid record");
                 record.seq().iter().for_each(|c| {
                     nucs[((*c as usize) >> 1) & 3] += 1;
                 });
-            });
+            }
             nucs
         }));
     }
