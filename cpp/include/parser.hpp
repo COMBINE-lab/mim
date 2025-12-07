@@ -114,7 +114,7 @@ public:
     uint64_t last_record_id = (end_chunk+1 < rec_boundaries.size()) ? rec_boundaries.at(end_chunk).first_record_in_chunk : idx_ptr_->total_record_count;
     last_rec_ = last_record_id;
 
-    in_stream_.reset(new KseqIndexedGzipStreamIn(reader2_.get()));
+    in_stream_.reset(new KseqIndexedGzipStreamIn(reader_.get()));
 
     // now, synchronize the second file with the first, that is, first, find the chunk in the second file 
     // containing the closest read ID less than or equal to first_record_id
