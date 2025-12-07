@@ -213,7 +213,7 @@ impl MultiPairParser {
         ipaths: &[P],
         nworker: usize,
     ) -> anyhow::Result<Self> {
-        /// for now, we only handle a single pair of reads
+        // for now, we only handle a single pair of reads
         assert_eq!(fpaths.len(), 2);
         assert_eq!(ipaths.len(), 2);
 

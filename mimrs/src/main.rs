@@ -67,13 +67,15 @@ struct PeekCommand {
 
 #[derive(Args, Debug)]
 struct NucHistCommand {
-    /// path to fastq
+    /// path to gzipped fastq files; either a single path, or a ',' separated pair (interpreted as
+    /// paired-end)
     #[arg(short, use_value_delimiter = true, value_delimiter = ',')]
     pub fastq_paths: Vec<PathBuf>,
 
-    /// path to index
+    /// path to index files; either a single path, or a ',' separated pair (interpreted as
+    /// paired-end). If not provided, the files will be looked for at the default location
     #[arg(short, use_value_delimiter = true, value_delimiter = ',')]
-    pub index_paths: Vec<PathBuf>,
+    pub index_paths: Option<Vec<PathBuf>>,
 
     /// number of threads to use
     pub nthreads: usize,
@@ -90,7 +92,7 @@ struct Cli {
 fn launch_paired_parser(args: &NucHistCommand) -> anyhow::Result<()> {
     let mp = Arc::new(MultiPairParser::new_with_workers(
         &args.fastq_paths,
-        &args.index_paths,
+        args.index_paths.as_ref().expect("valid at this point"),
         args.nthreads,
     )?);
 
@@ -140,7 +142,7 @@ fn launch_paired_parser(args: &NucHistCommand) -> anyhow::Result<()> {
 fn launch_single_parser(args: &NucHistCommand) -> anyhow::Result<()> {
     let mp = Arc::new(MultiParser::new_with_workers(
         &args.fastq_paths[0],
-        &args.index_paths[0],
+        &args.index_paths.as_ref().expect("valid at this point")[0],
         args.nthreads,
     ));
 
@@ -183,8 +185,22 @@ fn launch_single_parser(args: &NucHistCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
-    assert_eq!(args.fastq_paths.len(), args.index_paths.len());
+fn nuc_hist(args: &mut NucHistCommand) -> anyhow::Result<()> {
+    if args.index_paths.is_none() {
+        args.index_paths = Some(
+            args.fastq_paths
+                .iter()
+                .map(|f| f.with_added_extension("mim"))
+                .collect(),
+        );
+    }
+    assert_eq!(
+        args.fastq_paths.len(),
+        args.index_paths
+            .as_ref()
+            .expect("index_paths valid at this point")
+            .len()
+    );
     assert!(args.fastq_paths.len() <= 2);
 
     if args.fastq_paths.len() == 1 {
@@ -278,7 +294,7 @@ fn main() -> anyhow::Result<()> {
         .with(fmt::layer().with_writer(io::stderr))
         .with(filtered_layer)
         .init();
-    let cli = Cli::try_parse()?;
+    let mut cli = Cli::try_parse()?;
     match cli.commands {
         Commands::Inspect(ref inspect_args) => {
             inspect_index(inspect_args)?;
@@ -286,7 +302,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Peek(ref peek_args) => {
             peek(peek_args)?;
         }
-        Commands::NucHist(ref hist_args) => {
+        Commands::NucHist(ref mut hist_args) => {
             nuc_hist(hist_args)?;
         }
         Commands::Build(ref build_args) => {
