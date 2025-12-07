@@ -3,7 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use mimrs::gzip_reader::GzipStreamReader;
 use mimrs::indexer;
 use mimrs::mim_types::deflate_index_load_gzip;
-use mimrs::multi_parser::{MultiParser, ReadIter};
+use mimrs::multi_parser::{MultiPairParser, MultiParser, ReadIter};
 use std::io;
 use std::sync::Arc;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
@@ -68,10 +68,12 @@ struct PeekCommand {
 #[derive(Args, Debug)]
 struct NucHistCommand {
     /// path to fastq
-    pub fastq_path: PathBuf,
+    #[arg(short, use_value_delimiter = true, value_delimiter = ',')]
+    pub fastq_paths: Vec<PathBuf>,
 
     /// path to index
-    pub index_path: PathBuf,
+    #[arg(short, use_value_delimiter = true, value_delimiter = ',')]
+    pub index_paths: Vec<PathBuf>,
 
     /// number of threads to use
     pub nthreads: usize,
@@ -85,10 +87,60 @@ struct Cli {
     commands: Commands,
 }
 
-fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
+fn launch_paired_parser(args: &NucHistCommand) -> anyhow::Result<()> {
+    let mp = Arc::new(MultiPairParser::new_with_workers(
+        &args.fastq_paths,
+        &args.index_paths,
+        args.nthreads,
+    )?);
+
+    let start = std::time::Instant::now();
+
+    let mut threads = Vec::<JoinHandle<Vec<usize>>>::with_capacity(args.nthreads);
+
+    for t in 0..args.nthreads {
+        let mp = mp.clone();
+        threads.push(std::thread::spawn(move || {
+            let (mut wp1, mut wp2) = mp
+                .get_needletail_parsers_for_worker(t)
+                .expect("could get parsers");
+            let mut nucs = vec![0_usize; 4];
+            while let (Some(rec), Some(rec2)) = (wp1.next(), wp2.next()) {
+                let record = rec.expect("valid record");
+                record.seq().iter().for_each(|c| {
+                    nucs[((*c as usize) >> 1) & 3] += 1;
+                });
+                let record = rec2.expect("valid record");
+                record.seq().iter().for_each(|c| {
+                    nucs[((*c as usize) >> 1) & 3] += 1;
+                });
+            }
+            nucs
+        }));
+    }
+
+    let mut nuc_hist = [0_usize; 4];
+    for t in threads {
+        let loc_nuc = t.join().expect("valid join");
+        for (i, c) in loc_nuc.iter().enumerate() {
+            nuc_hist[i] += c;
+        }
+    }
+
+    eprintln!(
+        "A: {}, C: {}, G: {}, T (or N): {}",
+        nuc_hist[0], nuc_hist[1], nuc_hist[2], nuc_hist[3]
+    );
+
+    eprintln!("took: {:?}", start.elapsed());
+
+    Ok(())
+}
+
+fn launch_single_parser(args: &NucHistCommand) -> anyhow::Result<()> {
     let mp = Arc::new(MultiParser::new_with_workers(
-        &args.fastq_path,
-        &args.index_path,
+        &args.fastq_paths[0],
+        &args.index_paths[0],
         args.nthreads,
     ));
 
@@ -99,11 +151,11 @@ fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
     for t in 0..args.nthreads {
         let mp = mp.clone();
         threads.push(std::thread::spawn(move || {
-            let mut wp = mp
+            let mut wi = mp
                 .get_needletail_parser_for_worker(t)
                 .expect("can get worker");
             let mut nucs = vec![0_usize; 4];
-            while let Some(rec) = wp.next() {
+            while let Some(rec) = wi.next() {
                 let record = rec.expect("valid record");
                 record.seq().iter().for_each(|c| {
                     nucs[((*c as usize) >> 1) & 3] += 1;
@@ -128,6 +180,18 @@ fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
 
     eprintln!("took: {:?}", start.elapsed());
 
+    Ok(())
+}
+
+fn nuc_hist(args: &NucHistCommand) -> anyhow::Result<()> {
+    assert_eq!(args.fastq_paths.len(), args.index_paths.len());
+    assert!(args.fastq_paths.len() <= 2);
+
+    if args.fastq_paths.len() == 1 {
+        launch_single_parser(args)?
+    } else {
+        launch_paired_parser(args)?
+    }
     Ok(())
 }
 
