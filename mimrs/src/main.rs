@@ -187,12 +187,23 @@ fn launch_single_parser(args: &NucHistCommand) -> anyhow::Result<()> {
 
 fn nuc_hist(args: &mut NucHistCommand) -> anyhow::Result<()> {
     if args.index_paths.is_none() {
-        args.index_paths = Some(
-            args.fastq_paths
-                .iter()
-                .map(|f| f.with_added_extension("mim"))
-                .collect(),
-        );
+        let index_paths_res: Result<Vec<_>, &str> = args
+            .fastq_paths
+            .iter()
+            .map(|f| {
+                let mf = f.with_added_extension("mim");
+                return if mf.exists() {
+                    Ok(mf)
+                } else {
+                    Err("index file not found")
+                };
+            })
+            .collect();
+        if let Ok(index_paths) = index_paths_res {
+            args.index_paths = Some(index_paths);
+        } else {
+            anyhow::bail!("missing index path");
+        }
     }
     assert_eq!(
         args.fastq_paths.len(),
