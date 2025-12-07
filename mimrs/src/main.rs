@@ -186,19 +186,21 @@ fn launch_single_parser(args: &NucHistCommand) -> anyhow::Result<()> {
 }
 
 fn nuc_hist(args: &mut NucHistCommand) -> anyhow::Result<()> {
+    // if the user provided no index paths, try to infer them
     if args.index_paths.is_none() {
         let index_paths_res: Result<Vec<_>, &str> = args
             .fastq_paths
             .iter()
             .map(|f| {
                 let mf = f.with_added_extension("mim");
-                return if mf.exists() {
+                if mf.exists() {
                     Ok(mf)
                 } else {
                     Err("index file not found")
-                };
+                }
             })
             .collect();
+        // if we were able to find all of the files
         if let Ok(index_paths) = index_paths_res {
             args.index_paths = Some(index_paths);
         } else {
