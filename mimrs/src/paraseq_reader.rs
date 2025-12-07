@@ -4,6 +4,8 @@ use std::{
     thread,
 };
 
+use crate::indexer::{build_index, IndexError};
+
 use super::multi_parser::MultiParser;
 
 use paraseq::{
@@ -25,6 +27,18 @@ impl MimReader {
             file: path.to_owned(),
             index: path.to_owned().with_added_extension("mim"),
         }
+    }
+    pub fn build_if_missing(path: &Path) -> Result<Self, IndexError> {
+        let index = path.to_owned().with_added_extension("mim");
+
+        if !index.exists() {
+            build_index(path, 32_000_000, None, Some(&index))?;
+        }
+
+        Ok(MimReader {
+            file: path.to_owned(),
+            index,
+        })
     }
     pub fn new_with_index(path: &Path, index: &Path) -> Self {
         MimReader {
