@@ -15,6 +15,8 @@ The `mim` index is purely additive (i.e. creating it does not modify or rewrite 
 
 ## The Rust implementation
 
+**MSRV**: 1.91. If your Rust version is older than this, please upgrade by running `rustup update`.
+
 ### Compiling
 
 The Rust implementation can be found under the `mimrs` directory. It is build using `cargo`, and it is recommended to build it with `target-cpu=native`
