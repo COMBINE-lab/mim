@@ -344,27 +344,3 @@ impl MultiPairParser {
         }
     }
 }
-
-/*
-let file = File::open(&args.index_path).expect("File failed to index");
-    let index = deflate_index_load_gzip(file).expect("failed to load index");
-    assert!(
-        args.checkpoint < index.list.len(),
-        "requested checkpoint {} >= number of checkpoints {}",
-        args.checkpoint,
-        index.list.len()
-    );
-
-    eprintln!("opening at checkpoint: {}", args.checkpoint);
-    let mut gzfq = GzipStreamReader::open_at_checkpoint(&args.fastq_path, &index, args.checkpoint)
-        .expect("valid gzip stream reader");
-
-    let record_offset = index.record_boundaries[args.checkpoint].byte_offset;
-    if record_offset > gzfq.uncompressed_offset() {
-        // discard the requisite number of bytes
-        let mut discard_buf = vec![0_u8; (record_offset - gzfq.uncompressed_offset()) as usize];
-        gzfq.read_exact(&mut discard_buf)?;
-    }
-
-    let mut fastx_reader = needletail::parse_fastx_reader(gzfq).expect("invalid reader");
-*/
