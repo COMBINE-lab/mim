@@ -88,6 +88,60 @@ fn distribute_chunks(x: usize, t: usize) -> Vec<Range<usize>> {
     ranges
 }
 
+#[derive(Clone, Debug)]
+struct StreamReaderContext {
+    pub niter: usize,  // number of successful iterations this stream should yield
+    pub nbytes: usize, // number of bytes this stream should yield
+    pub first_record_rank: u64, // the rank of the first complete read in this contex
+}
+
+impl StreamReaderContext {
+    pub fn new(niter: usize, nbytes: usize, first_record_rank: u64) -> Self {
+        Self {
+            niter,
+            nbytes,
+            first_record_rank,
+        }
+    }
+}
+
+fn get_worker_stream_helper(
+    worker_id: usize,
+    fpath: &Path,
+    chunk_assignments: &[Range<usize>],
+    index: &DeflateIndex,
+) -> Result<(StreamReaderContext, GzipStreamReader)> {
+    let chunk_range = chunk_assignments[worker_id].clone();
+    let mut gzfq = GzipStreamReader::open_at_checkpoint(fpath, index, chunk_range.start)?;
+
+    let first_record_rank = index.record_boundaries[chunk_range.start].first_record_in_chunk;
+    let record_offset = index.record_boundaries[chunk_range.start].byte_offset;
+    if record_offset > gzfq.uncompressed_offset() {
+        // discard the requisite number of bytes
+        let mut discard_buf = vec![0_u8; (record_offset - gzfq.uncompressed_offset()) as usize];
+        gzfq.read_exact(&mut discard_buf)?;
+    }
+
+    let (niter, nbytes) = if chunk_range.end >= index.record_boundaries.len() {
+        (
+            index.total_record_count as u64 - first_record_rank,
+            index.length as u64 - record_offset,
+        )
+    } else {
+        let last_record_rank = index.record_boundaries[chunk_range.end].first_record_in_chunk;
+        let last_record_offset = index.record_boundaries[chunk_range.end].byte_offset;
+        (
+            last_record_rank - first_record_rank,
+            last_record_offset - record_offset,
+        )
+    };
+
+    Ok((
+        StreamReaderContext::new(niter as usize, nbytes as usize, first_record_rank),
+        gzfq,
+    ))
+}
+
 impl MultiParser {
     pub fn new_with_workers<P: AsRef<Path>>(fpath: P, ipath: P, nworker: usize) -> Self {
         let file = File::open(ipath.as_ref()).expect("File failed to open index file");
@@ -106,29 +160,20 @@ impl MultiParser {
 
     pub fn get_worker_stream(&self, worker_id: usize) -> Result<(usize, GzipStreamReader)> {
         if worker_id < self.nworker {
-            let chunk_range = self.chunk_assignments[worker_id].clone();
-            let mut gzfq =
-                GzipStreamReader::open_at_checkpoint(&self.fpath, &self.index, chunk_range.start)?;
-
-            let first_record_rank =
-                self.index.record_boundaries[chunk_range.start].first_record_in_chunk;
-            let record_offset = self.index.record_boundaries[chunk_range.start].byte_offset;
-            if record_offset > gzfq.uncompressed_offset() {
-                // discard the requisite number of bytes
-                let mut discard_buf =
-                    vec![0_u8; (record_offset - gzfq.uncompressed_offset()) as usize];
-                gzfq.read_exact(&mut discard_buf)?;
-            }
-
-            let niter = if chunk_range.end >= self.index.record_boundaries.len() {
-                self.index.total_record_count as u64 - first_record_rank
-            } else {
-                let last_record_rank =
-                    self.index.record_boundaries[chunk_range.end].first_record_in_chunk;
-                last_record_rank - first_record_rank
-            };
-
-            Ok((niter as usize, gzfq))
+            let (
+                StreamReaderContext {
+                    niter,
+                    nbytes: _,
+                    first_record_rank: _,
+                },
+                gzfq,
+            ) = get_worker_stream_helper(
+                worker_id,
+                &self.fpath,
+                &self.chunk_assignments,
+                &self.index,
+            )?;
+            Ok((niter, gzfq))
         } else {
             anyhow::bail!(
                 "Requested work for worker {}, but only {} workers were registered.",
@@ -144,28 +189,20 @@ impl MultiParser {
         worker_id: usize,
     ) -> Result<(usize, std::io::Take<GzipStreamReader>)> {
         if worker_id < self.nworker {
-            let chunk_range = self.chunk_assignments[worker_id].clone();
-            let mut gzfq =
-                GzipStreamReader::open_at_checkpoint(&self.fpath, &self.index, chunk_range.start)?;
-
-            let _first_record_rank =
-                self.index.record_boundaries[chunk_range.start].first_record_in_chunk;
-            let record_offset = self.index.record_boundaries[chunk_range.start].byte_offset;
-            if record_offset > gzfq.uncompressed_offset() {
-                // discard the requisite number of bytes
-                let mut discard_buf =
-                    vec![0_u8; (record_offset - gzfq.uncompressed_offset()) as usize];
-                gzfq.read_exact(&mut discard_buf)?;
-            }
-
-            let nbytes = if chunk_range.end >= self.index.record_boundaries.len() {
-                self.index.length as u64 - record_offset
-            } else {
-                let last_record_offset = self.index.record_boundaries[chunk_range.end].byte_offset;
-                last_record_offset - record_offset
-            };
-
-            Ok((nbytes as usize, gzfq.take(nbytes)))
+            let (
+                StreamReaderContext {
+                    niter: _,
+                    nbytes,
+                    first_record_rank: _,
+                },
+                gzfq,
+            ) = get_worker_stream_helper(
+                worker_id,
+                &self.fpath,
+                &self.chunk_assignments,
+                &self.index,
+            )?;
+            Ok((nbytes, gzfq.take(nbytes as u64)))
         } else {
             anyhow::bail!(
                 "Requested work for worker {}, but only {} workers were registered.",
@@ -247,33 +284,19 @@ impl MultiPairParser {
         worker_id: usize,
     ) -> anyhow::Result<(Box<dyn FastxReader + 'a>, Box<dyn FastxReader + 'a>)> {
         if worker_id < self.nworker {
-            // get the chunk in file 1
-            let chunk_range = self.chunk_assignments[worker_id].clone();
-            let mut gzfq = GzipStreamReader::open_at_checkpoint(
+            let (
+                StreamReaderContext {
+                    niter: _,
+                    nbytes,
+                    first_record_rank,
+                },
+                gzfq,
+            ) = get_worker_stream_helper(
+                worker_id,
                 &self.fpaths[0],
+                &self.chunk_assignments,
                 &self.indexes[0],
-                chunk_range.start,
             )?;
-
-            let first_record_rank =
-                self.indexes[0].record_boundaries[chunk_range.start].first_record_in_chunk;
-            let record_offset = self.indexes[0].record_boundaries[chunk_range.start].byte_offset;
-            // discard the requisite number of bytes
-            if record_offset > gzfq.uncompressed_offset() {
-                let mut discard_buf =
-                    vec![0_u8; (record_offset - gzfq.uncompressed_offset()) as usize];
-                gzfq.read_exact(&mut discard_buf)?;
-            }
-
-            // the number of bytes the first reader will consume
-            let nbytes = if chunk_range.end >= self.indexes[0].record_boundaries.len() {
-                self.indexes[0].length as u64 - record_offset
-            } else {
-                let last_record_offset =
-                    self.indexes[0].record_boundaries[chunk_range.end].byte_offset;
-                last_record_offset - record_offset
-            };
-
             // now sync the second file up with the first
             // find the chunk we jump to in file 2
             let mut second_file_chunk = self.indexes[1]
@@ -302,7 +325,7 @@ impl MultiPairParser {
                 gzfq2.read_exact(&mut discard_buf)?;
             }
 
-            let r1 = needletail::parse_fastx_reader(gzfq.take(nbytes))?;
+            let r1 = needletail::parse_fastx_reader(gzfq.take(nbytes as u64))?;
             let mut r2 = needletail::parse_fastx_reader(gzfq2)?;
 
             // skip the reads to sync up with reader 1
