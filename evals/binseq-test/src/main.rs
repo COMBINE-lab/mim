@@ -26,20 +26,15 @@ fn count_nucleotides(counts: &mut Counts, buf: &[u8]) {
 
 #[derive(Clone, Default)]
 pub struct Counter {
-    sbuf: Vec<u8>,
-    xbuf: Vec<u8>,
     local_counts: Counts,
     global_counts: Arc<Mutex<Counts>>,
 }
 impl Counter {
-    pub fn clear_buffers(&mut self) {
-        self.sbuf.clear();
-        self.xbuf.clear();
-    }
     pub fn merge_local_into_global(&mut self) {
         let mut global = self.global_counts.lock();
         for i in 0..4 {
             global[i] += self.local_counts[i];
+            self.local_counts[i] = 0;
         }
     }
     pub fn get_global_counts(&self) -> Counts {
@@ -55,12 +50,9 @@ impl Counter {
 }
 impl BinseqParallelProcessor for Counter {
     fn process_record<R: binseq::BinseqRecord>(&mut self, record: R) -> binseq::Result<()> {
-        self.clear_buffers();
-        record.decode_s(&mut self.sbuf)?;
-        count_nucleotides(&mut self.local_counts, &self.sbuf);
+        count_nucleotides(&mut self.local_counts, record.sseq());
         if record.is_paired() {
-            record.decode_x(&mut self.xbuf)?;
-            count_nucleotides(&mut self.local_counts, &self.xbuf);
+            count_nucleotides(&mut self.local_counts, record.xseq());
         }
         Ok(())
     }
