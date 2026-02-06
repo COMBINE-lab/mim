@@ -26,10 +26,10 @@ $ cd mimrs
 $ RUSTFLAGS='-C target-cpu=native' cargo b --release
 ```
 
-This will create the `mimrs` executable with several sub-commands:
+This will create the `mim` executable with several sub-commands:
 
 ```
-Usage: mimrs <COMMAND>
+Usage: mim <COMMAND>
 
 Commands:
   inspect   look insize an index
@@ -45,10 +45,10 @@ Options:
 
 ### Building the `mim` index
 
-The `mim` index for a gzipped FASTA/FASTQ file can be built with the `build` sub-command of `mimrs`
+The `mim` index for a gzipped FASTA/FASTQ file can be built with the `build` sub-command of `mim`
 
 ```
-Usage: mimrs build [OPTIONS] --fastq-path <FASTQ_PATH>
+Usage: mim build [OPTIONS] --fastq-path <FASTQ_PATH>
 
 Options:
   -f, --fastq-path <FASTQ_PATH>  path to fastx gz input
@@ -58,16 +58,16 @@ Options:
   -h, --help                     Print help
 ```
 
-For example, to generate an index file using distance between access points of 64,000,000 bytes
+For example, to generate an index file using distance between access points of 32 MB
 
 ```
-./target/release/mimrs build -f /path/to/compressed-fastq-file 
+./target/release/mim build -f /path/to/compressed-fastq-file 
 ```
 
 or, if you wanted to embed some useful information in the header
 
 ```
-./target/release/mimrs build -f /path/to/compressed-fastq-file --metadata '{ "sample": "that evil fish", "date" : "Nov. 27" }'
+./target/release/mim build -f /path/to/compressed-fastq-file --metadata '{ "sample": "that evil fish", "date" : "Nov. 27" }'
 ```
 
 ### Using the `mim` index
@@ -75,7 +75,7 @@ or, if you wanted to embed some useful information in the header
 To parse a file using the generated index, we provide a sample application:
 
 ```
-./target/release/mimrs <fastq_file> <index_file> <nthreads>
+./target/release/mim <fastq_file> <index_file> <nthreads>
 ```
 
 Right now, this sample application is only a proof of concept.  It simply counts the number of `A`, `C`, `G` and `T` nucleotides in all of the reads in the file.  However, we've build the `mim`-enabled parser to be generic and easy to reuse, so that developers can easily integrate it into their own applications.  Likewise, we are working on build `mim`-enabled parsers in Rust (and Python) that we hope to share here soon!
@@ -85,7 +85,7 @@ Right now, this sample application is only a proof of concept.  It simply counts
 You can use the `inspect` command to inspect an existing `mim` index:
 
 ```
-./target/release/mimrs inspect <index_file> 
+./target/release/mim inspect <index_file> 
 ```
 
 ## The C++ implementation

@@ -15,11 +15,11 @@ run-serial:
     cd cpp && time ./builddir/test_serial_parser {{f}}
 
 run-mimrs-12:
-    cd mimrs && time ./target/release/mimrs nuc-hist {{f}} {{f}}.mim 12
+    cd mimrs && time ./target/release/mim nuc-hist {{f}} {{f}}.mim 12
 run-mimrs-6:
-    cd mimrs && time ./target/release/mimrs nuc-hist {{f}} {{f}}.mim 6
+    cd mimrs && time ./target/release/mim nuc-hist {{f}} {{f}}.mim 6
 run-mimrs-1:
-    cd mimrs && time ./target/release/mimrs nuc-hist {{f}} {{f}}.mim 1
+    cd mimrs && time ./target/release/mim nuc-hist {{f}} {{f}}.mim 1
 
 run: run-serial run-mim-1 run-mim-6 run-mim-12
 

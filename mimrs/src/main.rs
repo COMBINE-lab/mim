@@ -1,12 +1,12 @@
-use ::lender::prelude::*;
 use clap::{Args, Parser, Subcommand};
-use mimrs::gzip_reader::GzipStreamReader;
-use mimrs::indexer;
-use mimrs::mim_types::deflate_index_load_gzip;
-use mimrs::multi_parser::{MultiPairParser, MultiParser, ReadIter};
+use lender::prelude::*;
+use mim::gzip_reader::GzipStreamReader;
+use mim::indexer;
+use mim::mim_types::deflate_index_load_gzip;
+use mim::multi_parser::{MultiPairParser, MultiParser, ReadIter};
 use std::io;
 use std::sync::Arc;
-use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
+use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*, EnvFilter};
 
 use std::fs::File;
 use std::io::Read;
