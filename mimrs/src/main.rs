@@ -41,7 +41,7 @@ struct BuildCommand {
 
     /// Distance between checkpoints.
     #[arg(short, long, default_value_t = 32_000_000)]
-    pub span: usize,
+    pub chunk_size: usize,
 
     // TODO: Must it be actual valid json?
     /// Optional metadata to add. Json-encoded string.
@@ -252,7 +252,7 @@ fn build_index(args: &BuildCommand) -> anyhow::Result<()> {
         .map(|s| serde_json::from_str(&s).expect("metadata must be valid json"));
     indexer::build_index(
         &args.fastq_path,
-        args.span as i64,
+        args.chunk_size as i64,
         user_metadata,
         args.index_path.as_ref(),
     )?;

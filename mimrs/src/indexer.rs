@@ -137,7 +137,7 @@ fn add_point(
     beg: i64,
     window: &[u8; WINSIZE],
     strm: &zlib::z_stream,
-    span: i64,
+    chunk_size: i64,
 ) -> Result<(), IndexError> {
     // Calculate window dictionary size
     let dict_size = if out - beg > WINSIZE as i64 {
@@ -175,7 +175,7 @@ fn add_point(
 
     if index.num_checkpoints % 10 == 0 {
         trace!(
-            "adding access point {} at {} (read) {} (written); distance {} vs span {}",
+            "adding access point {} at {} (read) {} (written); distance {} vs chunk size {}",
             index.num_checkpoints,
             in_offset,
             out,
@@ -184,7 +184,7 @@ fn add_point(
             } else {
                 0
             }),
-            span
+            chunk_size
         );
     }
 
@@ -293,7 +293,7 @@ fn handle_gzip_member_boundary<R: Read>(
 /// Build a deflate index from a gzip file using raw zlib API
 fn deflate_index_build<R: Read>(
     reader: &mut PeekableReader<R>,
-    span: i64,
+    chunk_size: i64,
 ) -> Result<MimIndex, IndexError> {
     let mut hasher = Hasher::new();
     let mut index = MimIndex::new();
@@ -374,7 +374,7 @@ fn deflate_index_build<R: Read>(
 
         // Check if we should add an access point
         if (state.strm.data_type & 0xc0) == 0x80
-            && (index.num_checkpoints == 0 || state.totout - state.last >= span)
+            && (index.num_checkpoints == 0 || state.totout - state.last >= chunk_size)
         {
             let in_offset = state.totin - state.strm.avail_in as i64;
             add_point(
@@ -384,7 +384,7 @@ fn deflate_index_build<R: Read>(
                 state.beg,
                 &state.window,
                 &state.strm,
-                span,
+                chunk_size,
             )?;
             state.last = state.totout;
         }
@@ -428,7 +428,7 @@ fn deflate_index_build<R: Read>(
 /// Build index from a gzip file with FASTQ record tracking
 pub fn build_index<P: AsRef<Path>>(
     gzip_file: P,
-    span: i64,
+    chunk_size: i64,
     user_metadata: Option<JsonValue>,
     output_file: Option<P>,
 ) -> Result<(), IndexError> {
@@ -438,7 +438,7 @@ pub fn build_index<P: AsRef<Path>>(
     let mut peekable_reader = PeekableReader::new(buf_reader);
 
     trace!("Building deflate index...");
-    let mut index = deflate_index_build(&mut peekable_reader, span)?;
+    let mut index = deflate_index_build(&mut peekable_reader, chunk_size)?;
 
     info!(
         "zran: built index with {} access points!",
