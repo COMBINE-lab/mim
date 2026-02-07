@@ -21,6 +21,7 @@ serde_json = { version = "1.0.145", features = ["indexmap", "preserve_order"] }
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 parking_lot = "0.12.5"
+bincode = { version = "2.0.1", features = ["derive"] }
 
 [profile.release-with-debug]
 inherits = "release"
