@@ -16,9 +16,10 @@ use std::path::Path;
 use std::ptr;
 use tracing::{info, trace};
 
-// Constants
-const WINSIZE: usize = 32768; // sliding window size
-const CHUNK: usize = 16384; // file input buffer size
+/// Gzip window size for LZ compression.
+const WINSIZE: usize = 32768;
+/// Process 16kB of the input file at a time.
+const CHUNK: usize = 16384;
 
 // Wrapper around Read that allows peeking a single byte
 struct PeekableReader<R: Read> {
@@ -318,6 +319,7 @@ fn deflate_index_build<R: Read>(
                     );
                 }
 
+                // FIXME: Add record counting here.
                 hasher.update(&state.buf[..bytes_read]);
                 state.totin += bytes_read as i64;
             }
@@ -466,6 +468,7 @@ pub fn build_index(
         });
 
         // Parse FASTQ file to count records
+        // TODO: Count at the same time as building the index.
         let mut reader = parse_fastx_file(gzip_file)
             .map_err(|e| IndexError::Compression(format!("Failed to parse FASTQ: {}", e)))?;
 
