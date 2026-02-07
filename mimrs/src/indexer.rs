@@ -549,7 +549,7 @@ pub fn build_index<P: AsRef<Path>>(
         "zran: attempting to write index to {}",
         output_path.to_string_lossy()
     );
-    save_index(&output_path, &index)?;
+    write_mim_index(&output_path, &index)?;
 
     info!(
         "zran: wrote index with {} access points to {}",
@@ -560,50 +560,15 @@ pub fn build_index<P: AsRef<Path>>(
     Ok(())
 }
 
-/// Save index to a gzipped file
-fn save_index(path: &Path, index: &MimIndex) -> Result<(), IndexError> {
-    use flate2::write::GzEncoder;
-    use flate2::Compression;
-
-    let file = File::create(path)?;
-    let mut encoder = GzEncoder::new(file, Compression::default());
-
-    // Write magic header
-    encoder.write_all(MIMINDEX_FILE_CONSTANT)?;
-
-    // Write metadata dictionary
-    encoder.write_all(&(index.metadata.len() as u64).to_le_bytes())?;
-    encoder.write_all(&index.metadata)?;
-
-    // Write index metadata
-    encoder.write_all(&index.mode.to_le_bytes())?;
-    encoder.write_all(&index.num_checkpoints.to_le_bytes())?;
-    encoder.write_all(&index.plain_size.to_le_bytes())?;
-    encoder.write_all(&index.num_record_chunks.to_le_bytes())?;
-    encoder.write_all(&index.plain_hash)?;
-
-    // Write access points
-    for point in &index.checkpoints {
-        encoder.write_all(&point.plain_offset.to_le_bytes())?;
-        encoder.write_all(&point.gz_offset.to_le_bytes())?;
-        encoder.write_all(&point.bits.to_le_bytes())?;
-        encoder.write_all(&(point.dictionary_size).to_le_bytes())?;
-        encoder.write_all(&point.window[..(point.dictionary_size as usize)])?;
-    }
-
-    // Write record boundaries
-    let boundaries_count = index.record_boundaries.len() as u64;
-    encoder.write_all(&boundaries_count.to_le_bytes())?;
-
-    for boundary in &index.record_boundaries {
-        encoder.write_all(&boundary.first_record_in_chunk.to_le_bytes())?;
-        encoder.write_all(&boundary.byte_offset.to_le_bytes())?;
-    }
-
-    // Write total record count
-    encoder.write_all(&index.total_num_records.to_le_bytes())?;
-
-    encoder.finish()?;
+/// Write index to a gzipped file.
+fn write_mim_index(path: &Path, index: &MimIndex) -> Result<(), IndexError> {
+    let writer = File::create(path)?;
+    let buffered_writer = io::BufWriter::new(writer);
+    // TODO: Use LZ4 instead?
+    let mut gz_writer =
+        flate2::write::GzEncoder::new(buffered_writer, flate2::Compression::default());
+    bincode::encode_into_std_write(index, &mut gz_writer, bincode::config::legacy())
+        .map_err(|e| IndexError::Compression(format!("Failed to encode index: {}", e)))?;
     Ok(())
 }
 
