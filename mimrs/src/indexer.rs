@@ -71,16 +71,18 @@ impl<R: Read> Read for PeekableReader<R> {
     }
 }
 
-/// Metadata structure
+/// Metadata structure that is CBOR json-encoded.
+///
+/// This allows for backwards-compatible extensions.
 #[derive(Debug, Serialize, Deserialize)]
 struct IndexMetadata {
-    version: String,
     user_metadata: Option<JsonValue>,
 }
 
 impl MimIndex {
     fn new() -> Self {
         Self {
+            version: 0,
             metadata: Vec::new(),
             num_checkpoints: 0,
             mode: crate::mim_types::DecompressionMode::NONE,
@@ -424,7 +426,7 @@ fn deflate_index_build<R: Read>(
     Ok(index)
 }
 
-/// Build index from a gzip file with FASTQ record tracking
+/// Build the `.mim` index for `gzip_file` at either `output_file` or `<gzip_file>.mim`.
 pub fn build_index(
     gzip_file: &Path,
     chunk_size: i64,
@@ -444,12 +446,10 @@ pub fn build_index(
         index.num_checkpoints
     );
 
-    // Create metadata
-    let metadata = IndexMetadata {
-        version: "1.0.0".to_string(),
-        user_metadata,
-    };
+    index.version = 0;
 
+    // Create metadata
+    let metadata = IndexMetadata { user_metadata };
     index.metadata =
         serde_cbor::to_vec(&metadata).map_err(|e| IndexError::Compression(e.to_string()))?;
 
@@ -532,13 +532,10 @@ pub fn build_index(
     info!("Got {} records from FASTQ file.", record_count);
 
     // Save index
-    let output_path = output_file
-        .map(|s| s.to_owned())
-        .unwrap_or_else(|| {
-            let pb = std::path::PathBuf::from(gzip_file);
-            pb.with_additional_extension(".mim")
-        })
-        .clone();
+    let output_path = match output_file {
+        Some(path) => path.to_owned(),
+        None => gzip_file.with_added_extension("mim"),
+    };
 
     trace!(
         "zran: attempting to write index to {}",

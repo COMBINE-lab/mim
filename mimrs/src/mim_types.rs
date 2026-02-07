@@ -51,6 +51,10 @@ pub enum DecompressionMode {
 /// Deflate index structure
 #[derive(bincode::Encode, bincode::Decode)]
 pub struct MimIndex {
+    /// The version of the index.
+    // TODO: Major/Minor/Patch versions?
+    // Maybe 10000 * major + 100 * minor + patch?
+    pub version: u64,
     /// CBOR serialized json string.
     pub metadata: Vec<u8>, // CBOR blob (deserialized)
     /// Number of checkpoints.
