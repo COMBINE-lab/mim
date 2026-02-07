@@ -15,39 +15,61 @@ use std::thread::JoinHandle;
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// look insize an index
-    Inspect(InspectCommand),
+    /// Build the .mim index.
+    Build(BuildCommand),
+
+    /// Print .mim file metadata.
+    Info(InfoCommand),
+
+    /// Parallel-unzip a .fastx.gz using the .mim index.
+    Unzip(UnzipCommand),
+
     /// print some reads
     Peek(PeekCommand),
     /// print some reads
     NucHist(NucHistCommand),
-    /// print some reads
-    Build(BuildCommand),
-}
-
-#[derive(Args, Debug)]
-struct InspectCommand {
-    /// path to index
-    pub index_path: PathBuf,
 }
 
 #[derive(Args, Debug)]
 struct BuildCommand {
-    /// path to fastx gz input
-    #[arg(short, long)]
+    /// Input .fastx.gz file.
+    #[arg(value_name = "FASTX_GZ")]
     pub fastq_path: PathBuf,
 
-    /// optional output path
-    #[arg(short, long)]
+    /// .mim file to write; default <FASTX_GZ>.mim.
+    #[arg(short = 'm', long = "mim")]
     pub index_path: Option<PathBuf>,
 
-    /// span
+    /// Distance between checkpoints.
     #[arg(short, long, default_value_t = 32_000_000)]
     pub span: usize,
 
-    /// optional metadata
-    #[arg(short, long)]
+    // TODO: Must it be actual valid json?
+    /// Optional metadata to add. Json-encoded string.
+    #[arg(short = 'd', long)]
     pub metadata: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct InfoCommand {
+    /// Input .mim file.
+    #[arg(value_name = "MIM")]
+    pub index_path: PathBuf,
+}
+
+#[derive(Args, Debug)]
+struct UnzipCommand {
+    /// Input .fastx.gz file.
+    #[arg(value_name = "FASTX_GZ")]
+    pub fastq_path: PathBuf,
+
+    /// .mim file to use; default <FASTX_GZ>.mim.
+    #[arg(short = 'm', long = "mim")]
+    pub index_path: Option<PathBuf>,
+
+    /// The number of .fastx.<part_id> parts to write.
+    #[arg(short, long)]
+    pub parts: Option<usize>,
 }
 
 #[derive(Args, Debug)]
@@ -238,11 +260,11 @@ fn build_index(args: &BuildCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn inspect_index(args: &InspectCommand) -> anyhow::Result<()> {
+fn inspect_index(args: &InfoCommand) -> anyhow::Result<()> {
     let file = File::open(&args.index_path)?;
     let index = deflate_index_load_gzip(file)?;
     let metadata_dict: serde_cbor::Value =
-        serde_cbor::from_slice(&index.metadata_dict).map_err(|e| {
+        serde_cbor::from_slice(&index.metadata).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("CBOR parse error: {}", e),
@@ -253,9 +275,9 @@ fn inspect_index(args: &InspectCommand) -> anyhow::Result<()> {
     println!("metadata = {:?}", &metadata_dict);
     println!(
         "blake3 checksum = {}",
-        base16::encode_lower(&index.compressed_hash)
+        base16::encode_lower(&index.plain_hash)
     );
-    println!("number of checkpoints = {}", index.have);
+    println!("number of checkpoints = {}", index.num_checkpoints);
     Ok(())
 }
 
@@ -263,10 +285,10 @@ fn peek(args: &PeekCommand) -> anyhow::Result<()> {
     let file = File::open(&args.index_path).expect("File failed to index");
     let index = deflate_index_load_gzip(file).expect("failed to load index");
     assert!(
-        args.checkpoint < index.list.len(),
+        args.checkpoint < index.checkpoints.len(),
         "requested checkpoint {} >= number of checkpoints {}",
         args.checkpoint,
-        index.list.len()
+        index.checkpoints.len()
     );
 
     eprintln!("opening at checkpoint: {}", args.checkpoint);
@@ -309,17 +331,20 @@ fn main() -> anyhow::Result<()> {
         .init();
     let mut cli = Cli::try_parse()?;
     match cli.commands {
-        Commands::Inspect(ref inspect_args) => {
+        Commands::Build(ref build_args) => {
+            build_index(build_args)?;
+        }
+        Commands::Info(ref inspect_args) => {
             inspect_index(inspect_args)?;
+        }
+        Commands::Unzip(ref _inspect_args) => {
+            todo!()
         }
         Commands::Peek(ref peek_args) => {
             peek(peek_args)?;
         }
         Commands::NucHist(ref mut hist_args) => {
             nuc_hist(hist_args)?;
-        }
-        Commands::Build(ref build_args) => {
-            build_index(build_args)?;
         }
     }
     Ok(())

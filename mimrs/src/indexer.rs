@@ -1,4 +1,6 @@
-use crate::mim_types::{BLAKE3_OUT_LEN, DeflateIndex, MIMINDEX_STR, Point, RecordCheckpoint};
+use crate::mim_types::{
+    Blake3Hash, DeflateCheckPoint, MimIndex, RecordCheckpoint, MIMINDEX_FILE_CONSTANT,
+};
 use blake3::Hasher;
 use path_tools::WithAdditionalExtension;
 //use libz_ng_sys::z_stream;
@@ -81,18 +83,18 @@ struct IndexMetadata {
     user_metadata: Option<JsonValue>,
 }
 
-impl DeflateIndex {
+impl MimIndex {
     fn new() -> Self {
         Self {
-            metadata_dict: Vec::new(),
-            have: 0,
+            metadata: Vec::new(),
+            num_checkpoints: 0,
             mode: 0,
-            length: 0,
-            list: Vec::new(),
+            plain_size: 0,
+            checkpoints: Vec::new(),
             record_boundaries: Vec::new(),
             num_record_chunks: 0,
-            total_record_count: 0,
-            compressed_hash: [0u8; BLAKE3_OUT_LEN],
+            total_num_records: 0,
+            plain_hash: Blake3Hash::default(),
         }
     }
 }
@@ -133,7 +135,7 @@ impl std::error::Error for IndexError {}
 
 /// Add an access point to the index
 fn add_point(
-    index: &mut DeflateIndex,
+    index: &mut MimIndex,
     in_offset: i64,
     out: i64,
     beg: i64,
@@ -165,24 +167,24 @@ fn add_point(
         dict[..remaining].copy_from_slice(&window[WINSIZE - remaining..WINSIZE]);
     }
 
-    index.list.push(Point {
-        out,
-        in_offset,
+    index.checkpoints.push(DeflateCheckPoint {
+        plain_offset: out,
+        gz_offset: in_offset,
         bits: bits.into(),
-        dict: dict_size as u32,
+        dictionary_size: dict_size as u32,
         window: dict,
     });
 
-    index.have += 1;
+    index.num_checkpoints += 1;
 
-    if index.have % 10 == 0 {
+    if index.num_checkpoints % 10 == 0 {
         trace!(
             "adding access point {} at {} (read) {} (written); distance {} vs span {}",
-            index.have,
+            index.num_checkpoints,
             in_offset,
             out,
-            out - (if index.have > 1 {
-                index.list[index.have as usize - 2].out
+            out - (if index.num_checkpoints > 1 {
+                index.checkpoints[index.num_checkpoints as usize - 2].plain_offset
             } else {
                 0
             }),
@@ -269,7 +271,11 @@ fn handle_gzip_member_boundary<R: Read>(
 
         trace!(
             "Z_STREAM_END detected: avail_in={}, peek={}, has_more={}, beg={}, totout={}",
-            state.strm.avail_in, has_peek, has_more_data, state.beg, state.totout
+            state.strm.avail_in,
+            has_peek,
+            has_more_data,
+            state.beg,
+            state.totout
         );
 
         if has_more_data {
@@ -292,9 +298,9 @@ fn handle_gzip_member_boundary<R: Read>(
 fn deflate_index_build<R: Read>(
     reader: &mut PeekableReader<R>,
     span: i64,
-) -> Result<DeflateIndex, IndexError> {
+) -> Result<MimIndex, IndexError> {
     let mut hasher = Hasher::new();
-    let mut index = DeflateIndex::new();
+    let mut index = MimIndex::new();
     let mut state = DecompressionState::new();
 
     let mut ret: i32 = zlib::Z_OK;
@@ -309,7 +315,9 @@ fn deflate_index_build<R: Read>(
                 if bytes_read >= 2 && state.buf[0] == 0x1f && state.buf[1] == 0x8b {
                     trace!(
                         "Read new gzip header at totin={}, totout={}, checkpoint={}",
-                        state.totin, state.totout, index.have
+                        state.totin,
+                        state.totout,
+                        index.num_checkpoints
                     );
                 }
 
@@ -343,7 +351,7 @@ fn deflate_index_build<R: Read>(
         }
 
         // Handle special case for RAW mode at the start
-        if state.mode == RAW && index.have == 0 {
+        if state.mode == RAW && index.num_checkpoints == 0 {
             state.strm.data_type = 0x80;
         } else {
             let before = state.strm.avail_out as i64;
@@ -370,7 +378,7 @@ fn deflate_index_build<R: Read>(
 
         // Check if we should add an access point
         if (state.strm.data_type & 0xc0) == 0x80
-            && (index.have == 0 || state.totout - state.last >= span)
+            && (index.num_checkpoints == 0 || state.totout - state.last >= span)
         {
             let in_offset = state.totin - state.strm.avail_in as i64;
             add_point(
@@ -406,7 +414,7 @@ fn deflate_index_build<R: Read>(
 
     // Finalize hash
     let hash = hasher.finalize();
-    index.compressed_hash.copy_from_slice(hash.as_bytes());
+    index.plain_hash.copy_from_slice(hash.as_bytes());
 
     let mut msg = vec![0_u8; 128];
     write!(&mut msg, "BLAKE3 checksum:")?;
@@ -416,7 +424,7 @@ fn deflate_index_build<R: Read>(
     info!("{}", str::from_utf8(&msg).expect("valid utf8"));
 
     index.mode = state.mode;
-    index.length = state.totout;
+    index.plain_size = state.totout;
 
     Ok(index)
 }
@@ -436,7 +444,10 @@ pub fn build_index<P: AsRef<Path>>(
     trace!("Building deflate index...");
     let mut index = deflate_index_build(&mut peekable_reader, span)?;
 
-    info!("zran: built index with {} access points!", index.have);
+    info!(
+        "zran: built index with {} access points!",
+        index.num_checkpoints
+    );
 
     // Create metadata
     let metadata = IndexMetadata {
@@ -444,7 +455,7 @@ pub fn build_index<P: AsRef<Path>>(
         user_metadata,
     };
 
-    index.metadata_dict =
+    index.metadata =
         serde_cbor::to_vec(&metadata).map_err(|e| IndexError::Compression(e.to_string()))?;
 
     // Process FASTQ records
@@ -452,7 +463,7 @@ pub fn build_index<P: AsRef<Path>>(
 
     let mut record_count = 0u64;
 
-    if index.have == 0 {
+    if index.num_checkpoints == 0 {
         info!("no access points created");
         index.record_boundaries.push(RecordCheckpoint {
             first_record_in_chunk: 0,
@@ -470,12 +481,12 @@ pub fn build_index<P: AsRef<Path>>(
 
         index.record_boundaries.push(RecordCheckpoint {
             first_record_in_chunk: record_count,
-            byte_offset: index.length as u64,
+            byte_offset: index.plain_size as u64,
         });
         index.num_record_chunks = 1;
     } else {
         let mut current_access_index = 0;
-        let mut next_decomp_checkpoint = index.list[current_access_index].out;
+        let mut next_decomp_checkpoint = index.checkpoints[current_access_index].plain_offset;
 
         // Parse FASTQ and align with access points
         let mut reader = parse_fastx_file(gzip_file.as_ref())
@@ -489,12 +500,15 @@ pub fn build_index<P: AsRef<Path>>(
             let record_start = record.position().byte() as i64; //reader.position().byte() as i64;
 
             // Check if we've passed a checkpoint
-            if record_start >= next_decomp_checkpoint && current_access_index < index.have as usize
+            if record_start >= next_decomp_checkpoint
+                && current_access_index < index.num_checkpoints as usize
             {
                 if index.record_boundaries.len() % 100 == 0 {
                     trace!(
                         "matched checkpoint {} with record starting at {} (record num {})",
-                        next_decomp_checkpoint, record_start, record_count
+                        next_decomp_checkpoint,
+                        record_start,
+                        record_count
                     );
                 }
 
@@ -504,8 +518,8 @@ pub fn build_index<P: AsRef<Path>>(
                 });
 
                 current_access_index += 1;
-                if current_access_index < index.have as usize {
-                    next_decomp_checkpoint = index.list[current_access_index].out;
+                if current_access_index < index.num_checkpoints as usize {
+                    next_decomp_checkpoint = index.checkpoints[current_access_index].plain_offset;
                 }
             }
 
@@ -514,12 +528,12 @@ pub fn build_index<P: AsRef<Path>>(
 
         index.record_boundaries.push(RecordCheckpoint {
             first_record_in_chunk: record_count,
-            byte_offset: index.length as u64,
+            byte_offset: index.plain_size as u64,
         });
         index.num_record_chunks = index.record_boundaries.len() as i64;
     }
 
-    index.total_record_count = record_count as i64;
+    index.total_num_records = record_count as i64;
     info!("Got {} records from FASTQ file.", record_count);
 
     // Save index
@@ -539,7 +553,7 @@ pub fn build_index<P: AsRef<Path>>(
 
     info!(
         "zran: wrote index with {} access points to {}",
-        index.have,
+        index.num_checkpoints,
         output_path.to_string_lossy()
     );
 
@@ -547,34 +561,34 @@ pub fn build_index<P: AsRef<Path>>(
 }
 
 /// Save index to a gzipped file
-fn save_index(path: &Path, index: &DeflateIndex) -> Result<(), IndexError> {
-    use flate2::Compression;
+fn save_index(path: &Path, index: &MimIndex) -> Result<(), IndexError> {
     use flate2::write::GzEncoder;
+    use flate2::Compression;
 
     let file = File::create(path)?;
     let mut encoder = GzEncoder::new(file, Compression::default());
 
     // Write magic header
-    encoder.write_all(MIMINDEX_STR.as_bytes())?;
+    encoder.write_all(MIMINDEX_FILE_CONSTANT)?;
 
     // Write metadata dictionary
-    encoder.write_all(&(index.metadata_dict.len() as u64).to_le_bytes())?;
-    encoder.write_all(&index.metadata_dict)?;
+    encoder.write_all(&(index.metadata.len() as u64).to_le_bytes())?;
+    encoder.write_all(&index.metadata)?;
 
     // Write index metadata
     encoder.write_all(&index.mode.to_le_bytes())?;
-    encoder.write_all(&index.have.to_le_bytes())?;
-    encoder.write_all(&index.length.to_le_bytes())?;
+    encoder.write_all(&index.num_checkpoints.to_le_bytes())?;
+    encoder.write_all(&index.plain_size.to_le_bytes())?;
     encoder.write_all(&index.num_record_chunks.to_le_bytes())?;
-    encoder.write_all(&index.compressed_hash)?;
+    encoder.write_all(&index.plain_hash)?;
 
     // Write access points
-    for point in &index.list {
-        encoder.write_all(&point.out.to_le_bytes())?;
-        encoder.write_all(&point.in_offset.to_le_bytes())?;
+    for point in &index.checkpoints {
+        encoder.write_all(&point.plain_offset.to_le_bytes())?;
+        encoder.write_all(&point.gz_offset.to_le_bytes())?;
         encoder.write_all(&point.bits.to_le_bytes())?;
-        encoder.write_all(&(point.dict).to_le_bytes())?;
-        encoder.write_all(&point.window[..(point.dict as usize)])?;
+        encoder.write_all(&(point.dictionary_size).to_le_bytes())?;
+        encoder.write_all(&point.window[..(point.dictionary_size as usize)])?;
     }
 
     // Write record boundaries
@@ -587,7 +601,7 @@ fn save_index(path: &Path, index: &DeflateIndex) -> Result<(), IndexError> {
     }
 
     // Write total record count
-    encoder.write_all(&index.total_record_count.to_le_bytes())?;
+    encoder.write_all(&index.total_num_records.to_le_bytes())?;
 
     encoder.finish()?;
     Ok(())
@@ -599,8 +613,8 @@ mod tests {
 
     #[test]
     fn test_index_creation() {
-        let index = DeflateIndex::new();
-        assert_eq!(index.have, 0);
+        let index = MimIndex::new();
+        assert_eq!(index.num_checkpoints, 0);
         assert_eq!(index.mode, 0);
     }
 }

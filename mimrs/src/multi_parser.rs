@@ -1,5 +1,5 @@
 use crate::gzip_reader::GzipStreamReader;
-use crate::mim_types::{DeflateIndex, deflate_index_load_gzip};
+use crate::mim_types::{deflate_index_load_gzip, MimIndex};
 use anyhow::Result;
 use lender::prelude::*;
 use needletail::errors::ParseError;
@@ -42,7 +42,7 @@ pub struct MultiParser {
     pub fpath: PathBuf,
     pub ipath: PathBuf,
     pub chunk_assignments: Vec<Range<usize>>,
-    pub index: DeflateIndex,
+    pub index: MimIndex,
 }
 
 unsafe impl Send for MultiParser {}
@@ -53,7 +53,7 @@ pub struct MultiPairParser {
     pub ipaths: Vec<PathBuf>,
     /// chunk assignments are with respect to read1 files
     pub chunk_assignments: Vec<Range<usize>>,
-    pub indexes: Vec<DeflateIndex>,
+    pub indexes: Vec<MimIndex>,
 }
 
 unsafe impl Send for MultiPairParser {}
@@ -109,7 +109,7 @@ fn get_worker_stream_helper(
     worker_id: usize,
     fpath: &Path,
     chunk_assignments: &[Range<usize>],
-    index: &DeflateIndex,
+    index: &MimIndex,
 ) -> Result<(StreamReaderContext, GzipStreamReader)> {
     let chunk_range = chunk_assignments[worker_id].clone();
     let mut gzfq = GzipStreamReader::open_at_checkpoint(fpath, index, chunk_range.start)?;
@@ -124,8 +124,8 @@ fn get_worker_stream_helper(
 
     let (niter, nbytes) = if chunk_range.end >= index.record_boundaries.len() {
         (
-            index.total_record_count as u64 - first_record_rank,
-            index.length as u64 - record_offset,
+            index.total_num_records as u64 - first_record_rank,
+            index.plain_size as u64 - record_offset,
         )
     } else {
         let last_record_rank = index.record_boundaries[chunk_range.end].first_record_in_chunk;
@@ -250,7 +250,7 @@ impl MultiPairParser {
             .iter()
             .map(|f| File::open(f.as_ref()).expect("Failed to open file"))
             .collect();
-        let indexes: Vec<DeflateIndex> = index_files
+        let indexes: Vec<MimIndex> = index_files
             .iter()
             .map(|f| deflate_index_load_gzip(f).expect("failed to load index"))
             .collect();

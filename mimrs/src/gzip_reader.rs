@@ -1,7 +1,7 @@
-use crate::mim_types::DeflateIndex;
+use crate::mim_types::MimIndex;
 use libz_rs_sys::{
-    Z_BUF_ERROR, Z_NO_FLUSH, Z_OK, Z_STREAM_END, inflate, inflateEnd, inflatePrime, inflateReset,
-    inflateSetDictionary, z_stream, zlibVersion,
+    inflate, inflateEnd, inflatePrime, inflateReset, inflateSetDictionary, z_stream, zlibVersion,
+    Z_BUF_ERROR, Z_NO_FLUSH, Z_OK, Z_STREAM_END,
 };
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
@@ -139,10 +139,10 @@ impl GzipStreamReader {
     /// Open a gzip file at a specific checkpoint
     pub fn open_at_checkpoint(
         gz_file_path: &Path,
-        index: &DeflateIndex,
+        index: &MimIndex,
         checkpoint_index: usize,
     ) -> io::Result<Self> {
-        if checkpoint_index >= index.have as usize {
+        if checkpoint_index >= index.num_checkpoints as usize {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Invalid checkpoint index",
@@ -163,14 +163,14 @@ impl GzipStreamReader {
         */
 
         // Get the checkpoint
-        let checkpoint = &index.list[checkpoint_index];
+        let checkpoint = &index.checkpoints[checkpoint_index];
 
-        let uncompressed_offset = checkpoint.out as u64;
+        let uncompressed_offset = checkpoint.plain_offset as u64;
         // Seek to the compressed position
         let seek_pos = if checkpoint.bits > 0 {
-            checkpoint.in_offset - 1
+            checkpoint.gz_offset - 1
         } else {
-            checkpoint.in_offset
+            checkpoint.gz_offset
         };
 
         file.seek(SeekFrom::Start(seek_pos as u64))?;
@@ -185,7 +185,7 @@ impl GzipStreamReader {
         let output_buffer = Box::new([0u8; BUFSIZE]);
 
         // Set the decompression dictionary FIRST (before any inflation)
-        if checkpoint.out > 0 {
+        if checkpoint.plain_offset > 0 {
             zstream.set_dictionary(&checkpoint.window)?;
         }
 
@@ -588,11 +588,7 @@ impl io::Read for GzipStreamReader {
     }
 }
 // Example usage
-pub fn example_usage(
-    gz_file: &Path,
-    index: &DeflateIndex,
-    checkpoint_idx: usize,
-) -> io::Result<()> {
+pub fn example_usage(gz_file: &Path, index: &MimIndex, checkpoint_idx: usize) -> io::Result<()> {
     let mut reader = GzipStreamReader::open_at_checkpoint(gz_file, index, checkpoint_idx)?;
 
     // Optionally disable multi-member checking for single-member files

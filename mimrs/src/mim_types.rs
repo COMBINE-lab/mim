@@ -1,124 +1,135 @@
+//! Type definitions for the main [`MimIndex`] type.
 use flate2::read::GzDecoder;
 use std::io::{Error, ErrorKind, Read, Result};
 
-pub(crate) const BLAKE3_OUT_LEN: usize = 32;
-pub(crate) const MIMINDEX_STR: &str = "MIMINDEX";
+/// Magic file signature constant that is written at the start of each .mim file.
+/// https://en.wikipedia.org/wiki/List_of_file_signatures
+pub(crate) const MIMINDEX_FILE_CONSTANT: &[u8; 8] = b"MIMINDEX";
 
-/// Access point structure
+/// Wrapper type for Blake3Hash.
+pub(crate) type Blake3Hash = [u8; 32];
+
+/// Checkpoint storing information about an arbitrary position in a .gz file.
+/// Contains the preceding 32KiB window to enable decompression, as well as
+/// the exact (byte and bit) offset in the decompressed file that this checkpoints corresponds to.
 #[derive(Debug, Clone)]
-pub struct Point {
-    pub out: i64,        // offset in uncompressed data
-    pub in_offset: i64,  // offset in compressed file of first full byte
-    pub bits: i32,       // 0, or number of bits (1-7) from byte at in-1
-    pub dict: u32,       // number of bytes in window to use as a dictionary
-    pub window: Vec<u8>, // preceding 32K (or less) of uncompressed data
+pub struct DeflateCheckPoint {
+    /// Byte offset in the decompressed data where this chunk starts.
+    pub plain_offset: i64,
+    /// Byte offset in the compressed file where this chunk starts.
+    pub gz_offset: i64,
+    /// TODO: For which of the two streams is this? Can the other one also be unaligned?
+    pub bits: i32,
+    /// Number of bytes in the window that are used as a dictionary.
+    pub dictionary_size: u32,
+    /// The preceding 32KiB (or less) window for deflate state.
+    pub window: Vec<u8>,
 }
 
-/// Information for getting the first record after an access point
+/// Information for getting the first record after a checkpoint.
 #[derive(Default, Debug, Clone)]
 pub struct RecordCheckpoint {
+    /// The 0-based index of the first record starting at or after this checkpoint.
     pub first_record_in_chunk: u64,
+    /// The offset in the uncompressed data of this chunk where the first contained record starts.
+    /// TODO: The first incomplete byte is always skipped.
     pub byte_offset: u64,
 }
 
 /// Deflate index structure
 #[derive(Debug)]
-pub struct DeflateIndex {
-    pub metadata_dict: Vec<u8>, // CBOR blob (deserialized)
-    pub have: i32,              // number of access points
-    pub mode: i32,              // -15 for raw, 15 for zlib, 31 for gzip
-    pub length: i64,            // total length of uncompressed data
-    pub list: Vec<Point>,       // list of access points
-    pub record_boundaries: Vec<RecordCheckpoint>,
+pub struct MimIndex {
+    /// CBOR serialized json string.
+    pub metadata: Vec<u8>, // CBOR blob (deserialized)
+    /// Number of checkpoints.
+    // FIXME: drop for just checkpoints.len()?
+    pub num_checkpoints: i32,
+    // FIXME: drop for record_boundaries.len()?
     pub num_record_chunks: i64,
-    pub total_record_count: i64,
-    pub compressed_hash: [u8; BLAKE3_OUT_LEN],
+    /// Total size in bytes of the decompressed gzip data.
+    pub plain_size: i64,
+    /// Total number of records.
+    pub total_num_records: i64,
+    /// Blake3 hash of the plain decompressed data.
+    pub plain_hash: Blake3Hash,
+
+    /// FIXME: -15 for raw, 15 for zlib, 31 for gzip
+    pub mode: i32,
+
+    /// The decompression checkpoints. Most of the size is here.
+    pub checkpoints: Vec<DeflateCheckPoint>,
+    /// Byte offset and index of first record in each chunk.
+    /// Also contains a past-the-end entry.
+    pub record_boundaries: Vec<RecordCheckpoint>,
 }
 
-/// Read a scalar value from the reader
-pub fn read_scalar<R: Read, T>(reader: &mut R) -> Result<T>
-where
-    T: Sized,
-{
-    let mut buffer = vec![0u8; std::mem::size_of::<T>()];
-    reader.read_exact(&mut buffer)?;
-    // SAFETY: We've allocated the correct size buffer and T is a plain old data type
-    let value = unsafe { std::ptr::read(buffer.as_ptr() as *const T) };
-    Ok(value)
+/// Read a scalar value from a reader.
+pub fn read_scalar<R: Read, T: Sized>(reader: &mut R) -> Result<T> {
+    let value = std::mem::MaybeUninit::<T>::uninit();
+    reader.read_exact(unsafe {
+        std::slice::from_raw_parts_mut(value.as_ptr() as *mut u8, std::mem::size_of::<T>())
+    })?;
+    Ok(unsafe { value.assume_init().into() })
 }
 
-/// Read a vector from the gzip file
-pub fn read_vector<R: Read, T>(reader: &mut R) -> Result<Vec<T>>
-where
-    T: Sized + Clone + Default,
-{
-    // Read vector length
-    let vec_len: usize = read_scalar(reader)?;
+/// Read a vector from a reader, with a `u64` length.
+pub fn read_vector<R: Read, T: Sized>(reader: &mut R) -> Result<Vec<T>> {
+    let len: u64 = read_scalar(reader)?;
+    (0..len)
+        .map(|_| read_scalar(reader))
+        .collect::<Result<Vec<T>>>()
+}
 
-    // Read vector data
-    let elem_size = std::mem::size_of::<T>();
-    let total_bytes = elem_size * vec_len;
-    let mut buffer = vec![0u8; total_bytes];
-    reader.read_exact(&mut buffer)?;
+/// Decompress and then deserialize a .mim file.
+// FIXME: Replace by a derive-based approach using eg bincode.
+pub fn deflate_index_load_gzip<R: Read>(reader: R) -> Result<MimIndex> {
+    let mut gz = GzDecoder::new(reader);
 
-    // Convert bytes to Vec<T>
-    // SAFETY: We're reading POD types with correct size and alignment
-    let mut vec = Vec::with_capacity(vec_len);
-    unsafe {
-        let ptr = buffer.as_ptr() as *const T;
-        for i in 0..vec_len {
-            vec.push(ptr.add(i).read());
+    {
+        // read the magic header
+        let mut magic_sig = [0u8; 8];
+        gz.read_exact(&mut magic_sig)?;
+        if magic_sig != *MIMINDEX_FILE_CONSTANT {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Expected magic signature {MIMINDEX_FILE_CONSTANT:?} ({}), but found {magic_sig:?}",
+                    str::from_utf8(MIMINDEX_FILE_CONSTANT).unwrap()
+                ),
+            ));
         }
     }
 
-    Ok(vec)
-}
-
-/// Deserialize deflate index from a gzip compressed file
-pub fn deflate_index_load_gzip<R: Read>(reader: R) -> Result<DeflateIndex> {
-    let mut gz = GzDecoder::new(reader);
-
-    // read the magic header
-    let mut magic_sig = vec![0u8; 8];
-    gz.read_exact(&mut magic_sig)?;
-    let magic_sig = str::from_utf8(&magic_sig).expect("signature is valid utf8");
-    if magic_sig != MIMINDEX_STR {
-        return Err(Error::new(
-            ErrorKind::InvalidData,
-            format!("Expected magic signature {MIMINDEX_STR}, but found {magic_sig}"),
-        ));
-    }
-
     // Read metadata_dict as CBOR
-    let metadata_bytes: Vec<u8> = read_vector(&mut gz)?;
+    let metadata: Vec<u8> = read_vector(&mut gz)?;
 
     // Read basic fields
     let mode: i32 = read_scalar(&mut gz)?;
-    let have: i32 = read_scalar(&mut gz)?;
-    let length: i64 = read_scalar(&mut gz)?;
+    let num_checkpoints: i32 = read_scalar(&mut gz)?;
+    let plain_size: i64 = read_scalar(&mut gz)?;
     let num_record_chunks: i64 = read_scalar(&mut gz)?;
 
     // Read hash
-    let mut compressed_hash = [0u8; BLAKE3_OUT_LEN];
-    gz.read_exact(&mut compressed_hash)?;
+    let mut plain_hash = Blake3Hash::default();
+    gz.read_exact(&mut plain_hash)?;
 
     // Read access points
-    let mut list = Vec::with_capacity(have as usize);
-    for _ in 0..have {
-        let out: i64 = read_scalar(&mut gz)?;
-        let in_offset: i64 = read_scalar(&mut gz)?;
+    let mut checkpoints = Vec::with_capacity(num_checkpoints as usize);
+    for _ in 0..num_checkpoints {
+        let plain_offset: i64 = read_scalar(&mut gz)?;
+        let gz_offset: i64 = read_scalar(&mut gz)?;
         let bits: i32 = read_scalar(&mut gz)?;
-        let dict: u32 = read_scalar(&mut gz)?;
+        let dictionary_size: u32 = read_scalar(&mut gz)?;
 
         // Read window data
-        let mut window = vec![0u8; dict as usize];
+        let mut window = vec![0u8; dictionary_size as usize];
         gz.read_exact(&mut window)?;
 
-        list.push(Point {
-            out,
-            in_offset,
+        checkpoints.push(DeflateCheckPoint {
+            plain_offset,
+            gz_offset,
             bits,
-            dict,
+            dictionary_size,
             window,
         });
     }
@@ -127,17 +138,17 @@ pub fn deflate_index_load_gzip<R: Read>(reader: R) -> Result<DeflateIndex> {
     let record_boundaries: Vec<RecordCheckpoint> = read_vector(&mut gz)?;
 
     // Read total record count
-    let total_record_count: i64 = read_scalar(&mut gz)?;
+    let total_num_records: i64 = read_scalar(&mut gz)?;
 
-    Ok(DeflateIndex {
-        metadata_dict: metadata_bytes,
-        have,
+    Ok(MimIndex {
+        metadata,
+        num_checkpoints,
         mode,
-        length,
-        list,
+        plain_size,
+        checkpoints,
         record_boundaries,
         num_record_chunks,
-        total_record_count,
-        compressed_hash,
+        total_num_records,
+        plain_hash,
     })
 }
