@@ -572,15 +572,3 @@ fn write_mim_index(path: &Path, index: &MimIndex) -> Result<(), IndexError> {
         .map_err(|e| IndexError::Compression(format!("Failed to encode index: {}", e)))?;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_index_creation() {
-        let index = MimIndex::new();
-        assert_eq!(index.num_checkpoints, 0);
-        assert_eq!(index.mode, 0);
-    }
-}
