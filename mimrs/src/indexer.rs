@@ -1,5 +1,6 @@
 use crate::mim_types::{
-    Blake3Hash, DeflateCheckPoint, MimIndex, RecordCheckpoint, MIMINDEX_FILE_CONSTANT,
+    Blake3Hash, DecompressionMode, DeflateCheckPoint, MimIndex, RecordCheckpoint,
+    MIMINDEX_FILE_CONSTANT,
 };
 use blake3::Hasher;
 use path_tools::WithAdditionalExtension;
@@ -19,11 +20,6 @@ use tracing::{info, trace};
 // Constants
 const WINSIZE: usize = 32768; // sliding window size
 const CHUNK: usize = 16384; // file input buffer size
-
-// Decompression modes
-const RAW: i32 = -15;
-const ZLIB: i32 = 15;
-const GZIP: i32 = 31;
 
 // Wrapper around Read that allows peeking a single byte
 struct PeekableReader<R: Read> {
@@ -88,7 +84,7 @@ impl MimIndex {
         Self {
             metadata: Vec::new(),
             num_checkpoints: 0,
-            mode: 0,
+            mode: crate::mim_types::DecompressionMode::NONE,
             plain_size: 0,
             checkpoints: Vec::new(),
             record_boundaries: Vec::new(),
@@ -201,7 +197,7 @@ struct DecompressionState {
     buf: [u8; CHUNK],
     totin: i64,
     totout: i64,
-    mode: i32,
+    mode: DecompressionMode,
     last: i64,
     beg: i64,
 }
@@ -221,17 +217,17 @@ impl DecompressionState {
             buf: [0u8; CHUNK],
             totin: 0,
             totout: 0,
-            mode: 0,
+            mode: DecompressionMode::NONE,
             last: 0,
             beg: 0,
         }
     }
 
-    fn init_inflate(&mut self, mode: i32) -> i32 {
+    fn init_inflate(&mut self, mode: DecompressionMode) -> i32 {
         unsafe {
             zlib::inflateInit2_(
                 &mut self.strm,
-                mode,
+                mode as i32,
                 zlib::zlibVersion(),
                 std::mem::size_of::<zlib::z_stream>() as i32,
             )
@@ -243,7 +239,7 @@ impl DecompressionState {
     }
 
     fn reset_inflate(&mut self) -> i32 {
-        unsafe { zlib::inflateReset2(&mut self.strm, GZIP) }
+        unsafe { zlib::inflateReset2(&mut self.strm, DecompressionMode::GZIP as i32) }
     }
 
     fn end_inflate(&mut self) {
@@ -259,7 +255,7 @@ fn handle_gzip_member_boundary<R: Read>(
     state: &mut DecompressionState,
     ret: &mut i32,
 ) -> Result<(), IndexError> {
-    if *ret == zlib::Z_STREAM_END && state.mode == GZIP {
+    if *ret == zlib::Z_STREAM_END && state.mode == DecompressionMode::GZIP {
         // Check if there's more data: either in buffer or by peeking into file
         let has_avail = state.strm.avail_in > 0;
         let has_peek = if !has_avail {
@@ -328,13 +324,13 @@ fn deflate_index_build<R: Read>(
             state.strm.avail_in = bytes_read as u32;
             state.strm.next_in = state.buf.as_mut_ptr();
 
-            if state.mode == 0 && bytes_read > 0 {
+            if state.mode == DecompressionMode::NONE && bytes_read > 0 {
                 state.mode = if state.buf[0] & 0x0f == 8 {
-                    ZLIB
+                    DecompressionMode::ZLIB
                 } else if state.buf[0] == 0x1f {
-                    GZIP
+                    DecompressionMode::GZIP
                 } else {
-                    RAW
+                    DecompressionMode::RAW
                 };
 
                 ret = state.init_inflate(state.mode);
@@ -351,7 +347,7 @@ fn deflate_index_build<R: Read>(
         }
 
         // Handle special case for RAW mode at the start
-        if state.mode == RAW && index.num_checkpoints == 0 {
+        if state.mode == DecompressionMode::RAW && index.num_checkpoints == 0 {
             state.strm.data_type = 0x80;
         } else {
             let before = state.strm.avail_out as i64;
@@ -369,7 +365,7 @@ fn deflate_index_build<R: Read>(
             // If we produced no output and we're in GZIP mode, treat this as Z_STREAM_END
             // to allow processing of the next member.
 
-            if ret == zlib::Z_DATA_ERROR && state.mode == GZIP && produced == 0 {
+            if ret == zlib::Z_DATA_ERROR && state.mode == DecompressionMode::GZIP && produced == 0 {
                 // This is likely a member boundary issue, treat as end of stream
                 ret = zlib::Z_STREAM_END;
                 trace!("HERE");

@@ -39,6 +39,15 @@ pub struct RecordCheckpoint {
     pub byte_offset: u64,
 }
 
+#[derive(Default, bincode::Encode, bincode::Decode, PartialEq, Eq, Clone, Copy)]
+pub enum DecompressionMode {
+    #[default]
+    NONE = 0,
+    RAW = -15,
+    ZLIB = 15,
+    GZIP = 31,
+}
+
 /// Deflate index structure
 #[derive(bincode::Encode, bincode::Decode)]
 pub struct MimIndex {
@@ -57,7 +66,7 @@ pub struct MimIndex {
     pub plain_hash: Blake3Hash,
 
     /// FIXME: -15 for raw, 15 for zlib, 31 for gzip
-    pub mode: i32,
+    pub mode: DecompressionMode,
 
     /// The decompression checkpoints. Most of the size is here.
     pub checkpoints: Vec<DeflateCheckPoint>,
