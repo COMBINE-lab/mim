@@ -134,25 +134,23 @@ impl std::error::Error for IndexError {}
 /// Add an access point to the index
 fn add_point(
     index: &mut MimIndex,
-    in_offset: i64,
-    out: i64,
+    gz_offset: i64,
+    plain_offset: i64,
     beg: i64,
     window: &[u8; WINSIZE],
     strm: &zlib::z_stream,
     chunk_size: i64,
 ) -> Result<(), IndexError> {
     // Calculate window dictionary size
-    let dict_size = if out - beg > WINSIZE as i64 {
-        WINSIZE
-    } else {
-        (out - beg) as usize
-    };
+    let dict_size = (plain_offset - beg).min(WINSIZE as i64) as usize;
 
+    // TODO:??
     let bits = (strm.data_type & 7) as u8;
     let mut dict = vec![0u8; dict_size];
 
     // Copy the sliding window data
     // avail_out tells us how much of the window hasn't been filled yet
+    // TODO: Understand this.
     let recent = WINSIZE - strm.avail_out as usize;
     let copy = recent.min(dict_size);
 
@@ -166,9 +164,9 @@ fn add_point(
     }
 
     index.checkpoints.push(DeflateCheckPoint {
-        plain_offset: out,
-        gz_offset: in_offset,
-        bits: bits.into(),
+        plain_offset,
+        gz_offset,
+        bits,
         dictionary_size: dict_size as u32,
         window: dict,
     });
@@ -179,13 +177,14 @@ fn add_point(
         trace!(
             "adding access point {} at {} (read) {} (written); distance {} vs chunk size {}",
             index.num_checkpoints,
-            in_offset,
-            out,
-            out - (if index.num_checkpoints > 1 {
-                index.checkpoints[index.num_checkpoints as usize - 2].plain_offset
-            } else {
-                0
-            }),
+            gz_offset,
+            plain_offset,
+            plain_offset
+                - (if index.num_checkpoints > 1 {
+                    index.checkpoints[index.num_checkpoints as usize - 2].plain_offset
+                } else {
+                    0
+                }),
             chunk_size
         );
     }

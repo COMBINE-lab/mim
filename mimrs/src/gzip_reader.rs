@@ -198,7 +198,7 @@ impl GzipStreamReader {
 
             // Use inflatePrime exactly as the C++ code does:
             let bit_value = (last_byte[0] >> (8 - checkpoint.bits)) as i32;
-            zstream.prime(checkpoint.bits, bit_value)?;
+            zstream.prime(checkpoint.bits as i32, bit_value)?;
 
             // Now read the next chunk of data into our buffer for inflate to use
             let bytes_read = file.read(&mut input_buffer[..])?;

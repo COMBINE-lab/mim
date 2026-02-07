@@ -22,7 +22,7 @@ pub struct DeflateCheckPoint {
     /// Byte offset in the compressed file where this chunk starts.
     pub gz_offset: i64,
     /// TODO: For which of the two streams is this? Can the other one also be unaligned?
-    pub bits: i32,
+    pub bits: u8,
     /// Number of bytes in the window that are used as a dictionary.
     pub dictionary_size: u32,
     /// The preceding 32KiB (or less) window for deflate state.
