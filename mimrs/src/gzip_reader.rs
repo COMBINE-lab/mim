@@ -165,12 +165,12 @@ impl GzipStreamReader {
         // Get the checkpoint
         let checkpoint = &index.checkpoints[checkpoint_index];
 
-        let uncompressed_offset = checkpoint.plain_offset as u64;
+        let uncompressed_offset = checkpoint.plain_pos as u64;
         // Seek to the compressed position
         let seek_pos = if checkpoint.bits > 0 {
-            checkpoint.gz_offset - 1
+            checkpoint.gz_pos - 1
         } else {
-            checkpoint.gz_offset
+            checkpoint.gz_pos
         };
 
         file.seek(SeekFrom::Start(seek_pos as u64))?;
@@ -185,7 +185,7 @@ impl GzipStreamReader {
         let output_buffer = Box::new([0u8; BUFSIZE]);
 
         // Set the decompression dictionary FIRST (before any inflation)
-        if checkpoint.plain_offset > 0 {
+        if checkpoint.plain_pos > 0 {
             zstream.set_dictionary(&checkpoint.window)?;
         }
 

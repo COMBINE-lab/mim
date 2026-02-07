@@ -1,8 +1,11 @@
+//! This file is based on zran C code which as transpiled to Rust by Claude.
+
 use crate::mim_types::{
     Blake3Hash, DecompressionMode, DeflateCheckPoint, MimIndex, RecordCheckpoint,
     MIMINDEX_FILE_CONSTANT,
 };
-use blake3::Hasher;
+use crate::record_counter;
+use itertools::Itertools;
 //use libz_ng_sys::z_stream;
 //use libz_ng_sys::{self as zlib, Z_OK};
 
@@ -14,11 +17,11 @@ use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::path::Path;
 use std::ptr;
-use tracing::{info, trace};
+use tracing::{debug, info, trace};
 
-/// Gzip window size for LZ compression.
+/// Output up to 32kiB of decompressed data at a time.
 const WINSIZE: usize = 32768;
-/// Process 16kB of the input file at a time.
+/// Process 16kB of gz file at a time.
 const CHUNK: usize = 16384;
 
 // Wrapper around Read that allows peeking a single byte
@@ -134,41 +137,38 @@ impl std::error::Error for IndexError {}
 /// Add an access point to the index
 fn add_point(
     index: &mut MimIndex,
-    gz_offset: i64,
-    plain_offset: i64,
-    beg: i64,
-    window: &[u8; WINSIZE],
+    gz_pos: i64,
+    plain_pos: i64,
+    gzip_member_start_pos: i64,
+    output_ringbuf: &[u8; WINSIZE],
     strm: &zlib::z_stream,
     chunk_size: i64,
 ) -> Result<(), IndexError> {
-    // Calculate window dictionary size
-    let dict_size = (plain_offset - beg).min(WINSIZE as i64) as usize;
+    // Context window does not go before the start of the gzip member.
+    let window_size = (plain_pos - gzip_member_start_pos).min(WINSIZE as i64) as usize;
+
+    let mut window = vec![0u8; window_size];
+    {
+        // 'unroll' the `output_ringbuf` into `window`.
+        // The last `strm.avail_out` bytes are the oldest, and the ones before are new.
+        let recent = WINSIZE - strm.avail_out as usize;
+        let prefix_copy = recent.min(window_size);
+        window[window_size - prefix_copy..]
+            .copy_from_slice(&output_ringbuf[recent - prefix_copy..recent]);
+        // Take the rest from the suffix.
+        let suffix_copy = window_size - prefix_copy;
+        window[..suffix_copy].copy_from_slice(&output_ringbuf[WINSIZE - suffix_copy..WINSIZE]);
+    }
 
     // TODO:??
     let bits = (strm.data_type & 7) as u8;
-    let mut dict = vec![0u8; dict_size];
-
-    // Copy the sliding window data
-    // avail_out tells us how much of the window hasn't been filled yet
-    // TODO: Understand this.
-    let recent = WINSIZE - strm.avail_out as usize;
-    let copy = recent.min(dict_size);
-
-    // Copy the most recent data
-    dict[dict_size - copy..].copy_from_slice(&window[recent - copy..recent]);
-
-    // If we need more, wrap around to the beginning of the window
-    let remaining = dict_size - copy;
-    if remaining > 0 {
-        dict[..remaining].copy_from_slice(&window[WINSIZE - remaining..WINSIZE]);
-    }
 
     index.checkpoints.push(DeflateCheckPoint {
-        plain_offset,
-        gz_offset,
+        plain_pos,
+        gz_pos,
         bits,
-        dictionary_size: dict_size as u32,
-        window: dict,
+        window_size: window_size as u32,
+        window,
     });
 
     index.num_checkpoints += 1;
@@ -177,11 +177,11 @@ fn add_point(
         trace!(
             "adding access point {} at {} (read) {} (written); distance {} vs chunk size {}",
             index.num_checkpoints,
-            gz_offset,
-            plain_offset,
-            plain_offset
+            gz_pos,
+            plain_pos,
+            plain_pos
                 - (if index.num_checkpoints > 1 {
-                    index.checkpoints[index.num_checkpoints as usize - 2].plain_offset
+                    index.checkpoints[index.num_checkpoints as usize - 2].plain_pos
                 } else {
                     0
                 }),
@@ -194,13 +194,20 @@ fn add_point(
 
 struct DecompressionState {
     strm: zlib::z_stream,
-    window: [u8; WINSIZE],
-    buf: [u8; CHUNK],
-    totin: i64,
-    totout: i64,
     mode: DecompressionMode,
-    last: i64,
-    beg: i64,
+    /// Buffer for reading chunks of the gz file.
+    input_buf: [u8; CHUNK],
+    /// Ringbuffer for decompression.
+    output_ringbuf: [u8; WINSIZE],
+
+    /// Total number of bytes read from the input gz stream.
+    gz_bytes_read: i64,
+    /// Total number of decompressed plaintext bytes returned.
+    plain_bytes_out: i64,
+    /// Plaintext position of last checkpoint.
+    last_checkpoint_pos: i64,
+    /// Plaintext start position of current gzip member.
+    gzip_member_start: i64,
 }
 
 impl DecompressionState {
@@ -214,13 +221,13 @@ impl DecompressionState {
 
         Self {
             strm,
-            window: [0u8; WINSIZE],
-            buf: [0u8; CHUNK],
-            totin: 0,
-            totout: 0,
+            input_buf: [0u8; CHUNK],
+            gz_bytes_read: 0,
+            plain_bytes_out: 0,
             mode: DecompressionMode::NONE,
-            last: 0,
-            beg: 0,
+            last_checkpoint_pos: 0,
+            output_ringbuf: [0u8; WINSIZE],
+            gzip_member_start: 0,
         }
     }
 
@@ -271,8 +278,8 @@ fn handle_gzip_member_boundary<R: Read>(
             state.strm.avail_in,
             has_peek,
             has_more_data,
-            state.beg,
-            state.totout
+            state.gzip_member_start,
+            state.plain_bytes_out
         );
 
         if has_more_data {
@@ -283,8 +290,8 @@ fn handle_gzip_member_boundary<R: Read>(
             trace!("Called inflateReset2, ret={}", ret);
 
             if *ret == zlib::Z_OK {
-                state.beg = state.totout; // Reset history
-                trace!("Reset beg to {}", state.beg);
+                state.gzip_member_start = state.plain_bytes_out; // Reset history
+                trace!("Reset beg to {}", state.gzip_member_start);
             }
         }
     }
@@ -296,40 +303,49 @@ fn deflate_index_build<R: Read>(
     reader: &mut PeekableReader<R>,
     chunk_size: i64,
 ) -> Result<MimIndex, IndexError> {
-    let mut hasher = Hasher::new();
+    let mut hasher = blake3::Hasher::new();
     let mut index = MimIndex::new();
     let mut state = DecompressionState::new();
+
+    let mut record_counter = record_counter::RecordCounter::new();
 
     let mut ret: i32 = zlib::Z_OK;
 
     // Main decompression loop
     'main_loop: loop {
+        let mut num_records = 0;
+        let mut first_record_offset = None;
+
         // Assure available input
         if state.strm.avail_in == 0 {
-            let bytes_read = reader.read(&mut state.buf)?;
+            let bytes_read = reader.read(&mut state.input_buf)?;
 
             if bytes_read > 0 {
-                if bytes_read >= 2 && state.buf[0] == 0x1f && state.buf[1] == 0x8b {
+                if bytes_read >= 2 && state.input_buf[0] == 0x1f && state.input_buf[1] == 0x8b {
                     trace!(
                         "Read new gzip header at totin={}, totout={}, checkpoint={}",
-                        state.totin,
-                        state.totout,
+                        state.gz_bytes_read,
+                        state.plain_bytes_out,
                         index.num_checkpoints
                     );
                 }
 
-                // FIXME: Add record counting here.
-                hasher.update(&state.buf[..bytes_read]);
-                state.totin += bytes_read as i64;
+                // FIXME: This bytes are very much NOT ascii of the original file.
+                hasher.update(&state.input_buf[..bytes_read]);
+                // FIXME: Do something with the record counting.
+                (num_records, first_record_offset) =
+                    record_counter.push_bytes(&state.input_buf[..bytes_read]);
+
+                state.gz_bytes_read += bytes_read as i64;
             }
 
             state.strm.avail_in = bytes_read as u32;
-            state.strm.next_in = state.buf.as_mut_ptr();
+            state.strm.next_in = state.input_buf.as_mut_ptr();
 
             if state.mode == DecompressionMode::NONE && bytes_read > 0 {
-                state.mode = if state.buf[0] & 0x0f == 8 {
+                state.mode = if state.input_buf[0] & 0x0f == 8 {
                     DecompressionMode::ZLIB
-                } else if state.buf[0] == 0x1f {
+                } else if state.input_buf[0] == 0x1f {
                     DecompressionMode::GZIP
                 } else {
                     DecompressionMode::RAW
@@ -345,7 +361,7 @@ fn deflate_index_build<R: Read>(
         // Assure available output
         if state.strm.avail_out == 0 {
             state.strm.avail_out = WINSIZE as u32;
-            state.strm.next_out = state.window.as_mut_ptr();
+            state.strm.next_out = state.output_ringbuf.as_mut_ptr();
         }
 
         // Handle special case for RAW mode at the start
@@ -356,7 +372,7 @@ fn deflate_index_build<R: Read>(
             ret = state.inflate(zlib::Z_BLOCK);
             let after = state.strm.avail_out as i64;
             let produced = before - after;
-            state.totout += produced;
+            state.plain_bytes_out += produced;
             // NOTE: Tracking: https://github.com/trifectatechfoundation/zlib-rs/issues/439
             // this *does not* seem to be necessary any longer, but I'm keeping it here just for
             // now.
@@ -375,20 +391,30 @@ fn deflate_index_build<R: Read>(
         }
 
         // Check if we should add an access point
+        // FIXME: Doesn't this create a checkpoint right after the first read bytes of the file?
         if (state.strm.data_type & 0xc0) == 0x80
-            && (index.num_checkpoints == 0 || state.totout - state.last >= chunk_size)
+            && (index.num_checkpoints == 0
+                || state.plain_bytes_out - state.last_checkpoint_pos >= chunk_size)
         {
-            let in_offset = state.totin - state.strm.avail_in as i64;
+            let in_offset = state.gz_bytes_read - state.strm.avail_in as i64;
             add_point(
                 &mut index,
                 in_offset,
-                state.totout,
-                state.beg,
-                &state.window,
+                state.plain_bytes_out,
+                state.gzip_member_start,
+                &state.output_ringbuf,
                 &state.strm,
                 chunk_size,
             )?;
-            state.last = state.totout;
+            debug!(
+                "Added checkpoint at totin={}, totout={}, checkpoint={}",
+                in_offset, state.plain_bytes_out, index.num_checkpoints
+            );
+            // index.record_boundaries.push(RecordCheckpoint {
+            //     first_record_in_chunk: num_records as u64,
+            //     byte_offset: first_record_offset.unwrap_or(state.totout as u64),
+            // });
+            state.last_checkpoint_pos = state.plain_bytes_out;
         }
 
         // Handle end of gzip member
@@ -422,7 +448,7 @@ fn deflate_index_build<R: Read>(
     info!("{}", str::from_utf8(&msg).expect("valid utf8"));
 
     index.mode = state.mode;
-    index.plain_size = state.totout;
+    index.plain_size = state.plain_bytes_out;
 
     Ok(index)
 }
@@ -483,7 +509,7 @@ pub fn build_index(
         index.num_record_chunks = 1;
     } else {
         let mut current_access_index = 0;
-        let mut next_decomp_checkpoint = index.checkpoints[current_access_index].plain_offset;
+        let mut next_decomp_checkpoint = index.checkpoints[current_access_index].plain_pos;
 
         // Parse FASTQ and align with access points
         let mut reader = parse_fastx_file(gzip_file)
@@ -516,7 +542,7 @@ pub fn build_index(
 
                 current_access_index += 1;
                 if current_access_index < index.num_checkpoints as usize {
-                    next_decomp_checkpoint = index.checkpoints[current_access_index].plain_offset;
+                    next_decomp_checkpoint = index.checkpoints[current_access_index].plain_pos;
                 }
             }
 

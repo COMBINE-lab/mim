@@ -18,13 +18,13 @@ pub(crate) type Blake3Hash = [u8; 32];
 #[derive(Clone, bincode::Encode, bincode::Decode)]
 pub struct DeflateCheckPoint {
     /// Byte offset in the decompressed data where this chunk starts.
-    pub plain_offset: i64,
+    pub plain_pos: i64,
     /// Byte offset in the compressed file where this chunk starts.
-    pub gz_offset: i64,
+    pub gz_pos: i64,
     /// TODO: For which of the two streams is this? Can the other one also be unaligned?
     pub bits: u8,
     /// Number of bytes in the window that are used as a dictionary.
-    pub dictionary_size: u32,
+    pub window_size: u32,
     /// The preceding 32KiB (or less) window for deflate state.
     pub window: Vec<u8>,
 }
