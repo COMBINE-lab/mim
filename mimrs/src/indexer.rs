@@ -332,9 +332,6 @@ fn deflate_index_build<R: Read>(
 
                 // FIXME: This bytes are very much NOT ascii of the original file.
                 hasher.update(&state.input_buf[..bytes_read]);
-                // FIXME: Do something with the record counting.
-                (num_records, first_record_offset) =
-                    record_counter.push_bytes(&state.input_buf[..bytes_read]);
 
                 state.gz_bytes_read += bytes_read as i64;
             }
@@ -388,6 +385,10 @@ fn deflate_index_build<R: Read>(
                 ret = zlib::Z_STREAM_END;
                 trace!("HERE");
             }
+            // FIXME: Do something with the record counting.
+            (num_records, first_record_offset) = record_counter.push_bytes(
+                &state.output_ringbuf[WINSIZE - before as usize..WINSIZE - after as usize],
+            );
         }
 
         // Check if we should add an access point
