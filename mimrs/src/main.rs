@@ -2,13 +2,12 @@ use clap::{Args, Parser, Subcommand};
 use lender::prelude::*;
 use mim::gzip_reader::GzipStreamReader;
 use mim::indexer;
-use mim::mim_types::deflate_index_load_gzip;
+use mim::mim_types::read_mim_index;
 use mim::multi_parser::{MultiPairParser, MultiParser, ReadIter};
 use std::io;
 use std::sync::Arc;
 use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*, EnvFilter};
 
-use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 use std::thread::JoinHandle;
@@ -261,8 +260,7 @@ fn build_index(args: &BuildCommand) -> anyhow::Result<()> {
 }
 
 fn inspect_index(args: &InfoCommand) -> anyhow::Result<()> {
-    let file = File::open(&args.index_path)?;
-    let index = deflate_index_load_gzip(file)?;
+    let index = read_mim_index(&args.index_path)?;
     let metadata_dict: serde_cbor::Value =
         serde_cbor::from_slice(&index.metadata).map_err(|e| {
             std::io::Error::new(
@@ -282,8 +280,7 @@ fn inspect_index(args: &InfoCommand) -> anyhow::Result<()> {
 }
 
 fn peek(args: &PeekCommand) -> anyhow::Result<()> {
-    let file = File::open(&args.index_path).expect("File failed to index");
-    let index = deflate_index_load_gzip(file).expect("failed to load index");
+    let index = read_mim_index(&args.index_path).expect("failed to load index");
     assert!(
         args.checkpoint < index.checkpoints.len(),
         "requested checkpoint {} >= number of checkpoints {}",

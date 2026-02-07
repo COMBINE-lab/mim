@@ -1,10 +1,9 @@
 use crate::gzip_reader::GzipStreamReader;
-use crate::mim_types::{deflate_index_load_gzip, MimIndex};
+use crate::mim_types::{read_mim_index, MimIndex};
 use anyhow::Result;
 use lender::prelude::*;
 use needletail::errors::ParseError;
 use needletail::parser::{FastxReader, SequenceRecord};
-use std::fs::File;
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -144,8 +143,7 @@ fn get_worker_stream_helper(
 
 impl MultiParser {
     pub fn new_with_workers<P: AsRef<Path>>(fpath: P, ipath: P, nworker: usize) -> Self {
-        let file = File::open(ipath.as_ref()).expect("File failed to open index file");
-        let index = deflate_index_load_gzip(file).expect("failed to load index");
+        let index = read_mim_index(ipath.as_ref()).expect("failed to load index");
 
         let chunk_assignments = distribute_chunks(index.num_record_chunks as usize, nworker);
 
@@ -246,13 +244,9 @@ impl MultiPairParser {
         assert_eq!(fpaths.len(), 2);
         assert_eq!(ipaths.len(), 2);
 
-        let index_files: Vec<std::fs::File> = ipaths
+        let indexes: Vec<MimIndex> = ipaths
             .iter()
-            .map(|f| File::open(f.as_ref()).expect("Failed to open file"))
-            .collect();
-        let indexes: Vec<MimIndex> = index_files
-            .iter()
-            .map(|f| deflate_index_load_gzip(f).expect("failed to load index"))
+            .map(|path| read_mim_index(path.as_ref()).expect("failed to load index"))
             .collect();
 
         // distribute chunks based on the first file

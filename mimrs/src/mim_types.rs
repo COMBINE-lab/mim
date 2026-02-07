@@ -1,5 +1,6 @@
 //! Type definitions for the main [`MimIndex`] type.
 use std::{
+    fs::File,
     io::{Error, ErrorKind, Result},
     path::Path,
 };
@@ -66,7 +67,8 @@ pub struct MimIndex {
 }
 
 /// Decompress and then deserialize a .mim file.
-pub fn deflate_index_load_gzip<R: Read>(reader: R) -> Result<MimIndex> {
+pub fn read_mim_index(path: &Path) -> Result<MimIndex> {
+    let reader = File::open(path)?;
     let buf_reader = std::io::BufReader::new(reader);
     let mut gz_reader = flate2::bufread::GzDecoder::new(buf_reader);
     bincode::decode_from_std_read(&mut gz_reader, bincode::config::legacy())
