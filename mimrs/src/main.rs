@@ -163,7 +163,7 @@ fn launch_paired_parser(args: &NucHistCommand) -> anyhow::Result<()> {
 fn launch_single_parser(args: &NucHistCommand) -> anyhow::Result<()> {
     let mp = Arc::new(MultiParser::new_with_workers(
         &args.fastq_paths[0],
-        &args.index_paths.as_ref().expect("valid at this point")[0],
+        &args.index_paths.as_deref().expect("valid at this point")[0],
         args.nthreads,
     ));
 
@@ -254,7 +254,7 @@ fn build_index(args: &BuildCommand) -> anyhow::Result<()> {
         &args.fastq_path,
         args.chunk_size as i64,
         user_metadata,
-        args.index_path.as_ref(),
+        args.index_path.as_deref(),
     )?;
     Ok(())
 }

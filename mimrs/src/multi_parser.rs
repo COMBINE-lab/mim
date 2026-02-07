@@ -142,15 +142,15 @@ fn get_worker_stream_helper(
 }
 
 impl MultiParser {
-    pub fn new_with_workers<P: AsRef<Path>>(fpath: P, ipath: P, nworker: usize) -> Self {
-        let index = read_mim_index(ipath.as_ref()).expect("failed to load index");
+    pub fn new_with_workers(fpath: &Path, ipath: &Path, nworker: usize) -> Self {
+        let index = read_mim_index(ipath).expect("failed to load index");
 
         let chunk_assignments = distribute_chunks(index.num_record_chunks as usize, nworker);
 
         Self {
             nworker,
-            fpath: PathBuf::from(fpath.as_ref()),
-            ipath: PathBuf::from(ipath.as_ref()),
+            fpath: PathBuf::from(fpath),
+            ipath: PathBuf::from(ipath),
             chunk_assignments,
             index,
         }

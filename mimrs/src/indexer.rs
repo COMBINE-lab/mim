@@ -3,7 +3,6 @@ use crate::mim_types::{
     MIMINDEX_FILE_CONSTANT,
 };
 use blake3::Hasher;
-use path_tools::WithAdditionalExtension;
 //use libz_ng_sys::z_stream;
 //use libz_ng_sys::{self as zlib, Z_OK};
 
@@ -426,14 +425,14 @@ fn deflate_index_build<R: Read>(
 }
 
 /// Build index from a gzip file with FASTQ record tracking
-pub fn build_index<P: AsRef<Path>>(
-    gzip_file: P,
+pub fn build_index(
+    gzip_file: &Path,
     chunk_size: i64,
     user_metadata: Option<JsonValue>,
-    output_file: Option<P>,
+    output_file: Option<&Path>,
 ) -> Result<(), IndexError> {
-    trace!("Opening file: {:?}", gzip_file.as_ref());
-    let file = File::open(gzip_file.as_ref())?;
+    trace!("Opening file: {:?}", gzip_file);
+    let file = File::open(gzip_file)?;
     let buf_reader = BufReader::with_capacity(1024 * 1024, file);
     let mut peekable_reader = PeekableReader::new(buf_reader);
 
@@ -467,7 +466,7 @@ pub fn build_index<P: AsRef<Path>>(
         });
 
         // Parse FASTQ file to count records
-        let mut reader = parse_fastx_file(gzip_file.as_ref())
+        let mut reader = parse_fastx_file(gzip_file)
             .map_err(|e| IndexError::Compression(format!("Failed to parse FASTQ: {}", e)))?;
 
         while let Some(record) = reader.next() {
@@ -485,7 +484,7 @@ pub fn build_index<P: AsRef<Path>>(
         let mut next_decomp_checkpoint = index.checkpoints[current_access_index].plain_offset;
 
         // Parse FASTQ and align with access points
-        let mut reader = parse_fastx_file(gzip_file.as_ref())
+        let mut reader = parse_fastx_file(gzip_file)
             .map_err(|e| IndexError::Compression(format!("Failed to parse FASTQ: {}", e)))?;
 
         while let Some(record_result) = reader.next() {
@@ -534,9 +533,9 @@ pub fn build_index<P: AsRef<Path>>(
 
     // Save index
     let output_path = output_file
-        .map(|s| s.as_ref().to_owned())
+        .map(|s| s.to_owned())
         .unwrap_or_else(|| {
-            let pb = std::path::PathBuf::from(gzip_file.as_ref());
+            let pb = std::path::PathBuf::from(gzip_file);
             pb.with_additional_extension(".mim")
         })
         .clone();
