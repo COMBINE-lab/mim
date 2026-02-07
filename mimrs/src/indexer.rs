@@ -567,6 +567,7 @@ fn write_mim_index(path: &Path, index: &MimIndex) -> Result<(), IndexError> {
     // TODO: Use LZ4 instead?
     let mut gz_writer =
         flate2::write::GzEncoder::new(buffered_writer, flate2::Compression::default());
+    gz_writer.write_all(MIMINDEX_FILE_CONSTANT)?;
     bincode::encode_into_std_write(index, &mut gz_writer, bincode::config::legacy())
         .map_err(|e| IndexError::Compression(format!("Failed to encode index: {}", e)))?;
     Ok(())

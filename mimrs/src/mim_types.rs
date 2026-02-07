@@ -1,7 +1,7 @@
 //! Type definitions for the main [`MimIndex`] type.
 use std::{
     fs::File,
-    io::{Error, ErrorKind, Result},
+    io::{Error, ErrorKind, Read, Result},
     path::Path,
 };
 
@@ -71,6 +71,17 @@ pub fn read_mim_index(path: &Path) -> Result<MimIndex> {
     let reader = File::open(path)?;
     let buf_reader = std::io::BufReader::new(reader);
     let mut gz_reader = flate2::bufread::GzDecoder::new(buf_reader);
+    {
+        // Check file constant.
+        let mut file_signature = [0; 8];
+        gz_reader.read_exact(&mut file_signature)?;
+        if file_signature != *MIMINDEX_FILE_CONSTANT {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "File signature does not match MIMINDEX constant.",
+            ));
+        }
+    }
     bincode::decode_from_std_read(&mut gz_reader, bincode::config::legacy())
         .map_err(|e| Error::new(ErrorKind::InvalidData, e))
 }
