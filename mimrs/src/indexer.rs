@@ -178,31 +178,6 @@ impl DecompressionState {
             gzip_member_start: 0,
         }
     }
-
-    fn init_inflate(&mut self, mode: DecompressionMode) -> i32 {
-        unsafe {
-            zlib::inflateInit2_(
-                &mut self.strm,
-                mode as i32,
-                zlib::zlibVersion(),
-                std::mem::size_of::<zlib::z_stream>() as i32,
-            )
-        }
-    }
-
-    fn inflate(&mut self, flush: i32) -> i32 {
-        unsafe { zlib::inflate(&mut self.strm, flush) }
-    }
-
-    fn reset_inflate(&mut self) -> i32 {
-        unsafe { zlib::inflateReset2(&mut self.strm, DecompressionMode::GZIP as i32) }
-    }
-
-    fn end_inflate(&mut self) {
-        unsafe {
-            zlib::inflateEnd(&mut self.strm);
-        }
-    }
 }
 
 /// Handle the boundary between concatenated gzip members.
@@ -220,7 +195,7 @@ fn handle_gzip_member_boundary(state: &mut DecompressionState, ret: &mut i32) {
         // There is more input after the end of a gzip member
         // Reset the inflate state to read another gzip member
         // On success, this sets ret back to Z_OK to continue decompressing
-        *ret = state.reset_inflate();
+        *ret = unsafe { zlib::inflateReset2(&mut state.strm, DecompressionMode::GZIP as i32) };
         trace!("Called inflateReset2, ret={}", ret);
 
         if *ret == zlib::Z_OK {
@@ -296,7 +271,14 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
                     DecompressionMode::RAW
                 };
 
-                ret = state.init_inflate(state.mode);
+                ret = unsafe {
+                    zlib::inflateInit2_(
+                        &mut state.strm,
+                        state.mode as i32,
+                        zlib::zlibVersion(),
+                        std::mem::size_of::<zlib::z_stream>() as i32,
+                    )
+                };
                 if ret != zlib::Z_OK {
                     break 'main_loop;
                 }
@@ -314,7 +296,7 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
             state.strm.data_type = 0x80;
         } else {
             let before = state.strm.avail_out as i64;
-            ret = state.inflate(zlib::Z_BLOCK);
+            ret = unsafe { zlib::inflate(&mut state.strm, zlib::Z_BLOCK) };
             let after = state.strm.avail_out as i64;
             let produced = before - after;
             state.plain_bytes_out += produced;
@@ -367,7 +349,7 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
         }
     }
 
-    state.end_inflate();
+    unsafe { zlib::inflateEnd(&mut state.strm) };
 
     if ret != zlib::Z_STREAM_END {
         return match ret {
