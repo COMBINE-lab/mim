@@ -12,14 +12,17 @@ use libz_rs_sys::{self as zlib};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::fs::File;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::ptr;
 use tracing::{debug, info, trace};
 
-/// Read 32kB of gz file at a time.
-const INPUT_BUF_SIZE: usize = 128 * 1024;
+/// Buffer size for the input file.
+const INPUT_BUF_SIZE: usize = 1024 * 1024;
 /// Decompress up to 128kB of output at a time.
+/// 
+/// We only ever read the last `WINSIZE` bytes of this,
+/// but longer decompression loops are faster.
 const OUTPUT_BUF_SIZE: usize = 256 * 1024;
 /// Context window size for the index.
 const WINSIZE: usize = 32 * 1024;
@@ -143,13 +146,12 @@ fn add_point(
 struct DecompressionState {
     strm: zlib::z_stream,
     mode: DecompressionMode,
-    /// Buffer for reading chunks of the gz file.
-    input_buf: [u8; INPUT_BUF_SIZE],
+
     /// Ringbuffer for decompression.
     output_ringbuf: [u8; OUTPUT_BUF_SIZE],
 
     /// Total number of bytes read from the input gz stream.
-    gz_bytes_read: i64,
+    in_pos: i64,
     /// Total number of decompressed plaintext bytes returned.
     plain_bytes_out: i64,
     /// Plaintext position of last checkpoint.
@@ -169,8 +171,7 @@ impl DecompressionState {
 
         Self {
             strm,
-            input_buf: [0u8; INPUT_BUF_SIZE],
-            gz_bytes_read: 0,
+            in_pos: 0,
             plain_bytes_out: 0,
             mode: DecompressionMode::NONE,
             last_checkpoint_pos: 0,
@@ -206,7 +207,7 @@ fn handle_gzip_member_boundary(state: &mut DecompressionState, ret: &mut i32) {
 }
 
 /// Build a deflate index from a gzip file using raw zlib API
-fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIndex, IndexError> {
+fn deflate_index_build<R: BufRead>(reader: &mut R, chunk_size: i64) -> Result<MimIndex, IndexError> {
     let mut hasher = blake3::Hasher::new();
     let mut index = MimIndex::new();
     let mut state = DecompressionState::new();
@@ -216,6 +217,8 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
     let mut ret: i32 = zlib::Z_OK;
 
     let mut num_records = 0;
+
+    let mut input_buf;
 
     // Main decompression loop
     'main_loop: loop {
@@ -227,8 +230,8 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
                 break 'main_loop;
             }
         } else {
-            // Assure available input
-            let bytes_read = reader.read(&mut state.input_buf)?;
+            input_buf = reader.fill_buf()?;
+            let bytes_read = input_buf.len();
 
             // NOTE: We assume that we won't receive additional data after 0 has been returned.
             // (Eg if the underlying file is appended to.)
@@ -245,10 +248,10 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
 
             // FIXME: This can also trigger randomly, not only at start of file?
             // And gzip headers can occur also in the middle of file reads?
-            if bytes_read >= 2 && state.input_buf[0] == 0x1f && state.input_buf[1] == 0x8b {
+            if let [0x1f, 0x8b, ..] = input_buf{
                 trace!(
                     "Read new gzip header at totin={}, totout={}, checkpoint={}",
-                    state.gz_bytes_read,
+                    state.in_pos,
                     state.plain_bytes_out,
                     index.num_checkpoints
                 );
@@ -256,20 +259,17 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
             // trace!("Read {} bytes", bytes_read);
 
             // Hash the gzip file itself.
-            hasher.update(&state.input_buf[..bytes_read]);
+            hasher.update(input_buf);
 
-            state.gz_bytes_read += bytes_read as i64;
             state.strm.avail_in = bytes_read as u32;
-            state.strm.next_in = state.input_buf.as_mut_ptr();
+            state.strm.next_in = input_buf.as_ptr();
 
             // FIXME: Can the mode change between gzip members?
             if state.mode == DecompressionMode::NONE && bytes_read > 0 {
-                state.mode = if state.input_buf[0] & 0x0f == 8 {
-                    DecompressionMode::ZLIB
-                } else if state.input_buf[0] == 0x1f {
-                    DecompressionMode::GZIP
-                } else {
-                    DecompressionMode::RAW
+                state.mode = match input_buf[0] {
+                    b if b & 0x0f == 8 => DecompressionMode::ZLIB,
+                    0x1f => DecompressionMode::GZIP,
+                    _ => DecompressionMode::RAW,
                 };
 
                 ret = unsafe {
@@ -296,10 +296,15 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
         if state.mode == DecompressionMode::RAW && index.num_checkpoints == 0 {
             state.strm.data_type = 0x80;
         } else {
-            let before = state.strm.avail_out as i64;
+            let out_before = state.strm.avail_out as i64;
+            let in_before = state.strm.avail_in as i64;
             ret = unsafe { zlib::inflate(&mut state.strm, zlib::Z_BLOCK) };
-            let after = state.strm.avail_out as i64;
-            let produced = before - after;
+            let out_after = state.strm.avail_out as i64;
+            let in_after = state.strm.avail_in as i64;
+            let consumed = in_before - in_after;
+            state.in_pos += consumed;
+            reader.consume(consumed as usize);
+            let produced = out_before - out_after;
             // trace!("Produced {} bytes", produced);
             state.plain_bytes_out += produced;
             // NOTE: Tracking: https://github.com/trifectatechfoundation/zlib-rs/issues/439
@@ -321,7 +326,7 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
             let first_record_offset;
             (num_records, first_record_offset) = record_counter.push_bytes(
                 &state.output_ringbuf
-                    [OUTPUT_BUF_SIZE - before as usize..OUTPUT_BUF_SIZE - after as usize],
+                    [OUTPUT_BUF_SIZE - out_before as usize..OUTPUT_BUF_SIZE - out_after as usize],
             );
             if let Some(last) = index.record_boundaries.last_mut() {
                 if last.next_record_pos == u64::MAX && let Some(fr) = first_record_offset {
@@ -339,10 +344,9 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
             && (index.num_checkpoints == 0
                 || state.plain_bytes_out - state.last_checkpoint_pos >= chunk_size)
         {
-            let in_offset = state.gz_bytes_read - state.strm.avail_in as i64;
             add_point(
                 &mut index,
-                in_offset,
+                state.in_pos,
                 state.plain_bytes_out,
                 state.gzip_member_start,
                 &state.output_ringbuf,
@@ -351,7 +355,7 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
             )?;
             debug!(
                 "Added checkpoint at totin={}, totout={}, checkpoint={}",
-                in_offset, state.plain_bytes_out, index.num_checkpoints
+                state.in_pos, state.plain_bytes_out, index.num_checkpoints
             );
             trace!("Num records in this chunk: {}", num_records);
             index.record_boundaries.push(RecordCheckpoint {
@@ -404,7 +408,7 @@ pub fn build_index(
 ) -> Result<(), IndexError> {
     trace!("Opening file: {:?}", gzip_file);
     let file = File::open(gzip_file)?;
-    let mut buf_reader = BufReader::with_capacity(1024 * 1024, file);
+    let mut buf_reader = BufReader::with_capacity(INPUT_BUF_SIZE, file);
 
     trace!("Building deflate index...");
     let mut index = deflate_index_build(&mut buf_reader, chunk_size)?;
