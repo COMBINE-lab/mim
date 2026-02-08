@@ -125,11 +125,6 @@ pub struct GzipStreamReader {
     // Input buffer for compressed data
     input_buffer: Box<[u8; BUFSIZE]>, // 128KB
 
-    // Output buffer for decompressed data
-    output_buffer: Box<[u8; BUFSIZE]>, // 128KB
-    output_buffer_size: usize,
-    output_buffer_pos: usize,
-
     file_offset: u64,
     multi_member: bool,
     // file_buffer: Option<Box<[u8]>>,
@@ -182,7 +177,6 @@ impl GzipStreamReader {
         zstream.init(-15)?;
 
         let mut input_buffer = Box::new([0u8; BUFSIZE]);
-        let output_buffer = Box::new([0u8; BUFSIZE]);
 
         // Set the decompression dictionary FIRST (before any inflation)
         if checkpoint.plain_pos > 0 {
@@ -229,9 +223,6 @@ impl GzipStreamReader {
             zstream,
             uncompressed_offset,
             input_buffer,
-            output_buffer,
-            output_buffer_size: 0,
-            output_buffer_pos: 0,
             file_offset,
             multi_member: true,
             //file_buffer: Some(file_buffer),
@@ -455,132 +446,56 @@ impl io::Read for GzipStreamReader {
 
         let len = buffer.len();
         let mut total_copied = 0;
-        let direct_threshold = self.output_buffer.len();
 
         while total_copied < len {
             let remaining = len - total_copied;
 
-            // If we have decompressed data in output buffer, copy it
-            if self.output_buffer_pos < self.output_buffer_size {
-                let available = self.output_buffer_size - self.output_buffer_pos;
-                let to_copy = remaining.min(available);
+            // Scope the strm borrow
+            let ret = {
+                let strm = self.zstream.get_mut();
 
-                buffer[total_copied..total_copied + to_copy].copy_from_slice(
-                    &self.output_buffer[self.output_buffer_pos..self.output_buffer_pos + to_copy],
-                );
+                if strm.avail_in == 0 {
+                    let bytes_read = self.file.read(&mut self.input_buffer[..])?;
+                    if bytes_read == 0 {
+                        return Ok(total_copied);
+                    }
+                    self.file_offset += bytes_read as u64;
+                    strm.avail_in = bytes_read as u32;
+                    strm.next_in = self.input_buffer.as_mut_ptr();
+                }
 
-                self.output_buffer_pos += to_copy;
-                total_copied += to_copy;
-                self.uncompressed_offset += to_copy as u64;
+                strm.next_out = buffer[total_copied..].as_mut_ptr();
+                strm.avail_out = remaining as u32;
+
+                let ret = unsafe { inflate(strm, Z_NO_FLUSH) };
+                let produced = remaining - strm.avail_out as usize;
+
+                total_copied += produced;
+                self.uncompressed_offset += produced as u64;
+
+                ret
+            }; // strm borrow ends here
+
+            if ret == Z_OK || ret == Z_BUF_ERROR {
                 continue;
-            }
-
-            // For large requests, decompress directly into user buffer
-            if remaining >= direct_threshold {
-                // Scope the strm borrow
-                let ret = {
-                    let strm = self.zstream.get_mut();
-
-                    if strm.avail_in == 0 {
-                        let bytes_read = self.file.read(&mut self.input_buffer[..])?;
-                        if bytes_read == 0 {
-                            return Ok(total_copied);
-                        }
-                        self.file_offset += bytes_read as u64;
-                        strm.avail_in = bytes_read as u32;
-                        strm.next_in = self.input_buffer.as_mut_ptr();
-                    }
-
-                    strm.next_out = buffer[total_copied..].as_mut_ptr();
-                    strm.avail_out = remaining as u32;
-
-                    let ret = unsafe { inflate(strm, Z_NO_FLUSH) };
-                    let produced = remaining - strm.avail_out as usize;
-
-                    total_copied += produced;
-                    self.uncompressed_offset += produced as u64;
-
-                    ret
-                }; // strm borrow ends here
-
-                if ret == Z_OK || ret == Z_BUF_ERROR {
-                    continue;
-                } else if ret == Z_STREAM_END {
-                    // Now we can call other methods on self
-                    let avail_in = self.zstream.get_mut().avail_in;
-                    if !self.multi_member || (avail_in == 0 && self.is_eof()?) {
-                        return Ok(total_copied);
-                    }
-
-                    if !self.skip_gzip_header()? {
-                        return Ok(total_copied);
-                    }
-
-                    self.zstream.reset()?;
-                    continue;
-                } else {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("inflate error: {}", ret),
-                    ));
+            } else if ret == Z_STREAM_END {
+                // Now we can call other methods on self
+                let avail_in = self.zstream.get_mut().avail_in;
+                if !self.multi_member || (avail_in == 0 && self.is_eof()?) {
+                    return Ok(total_copied);
                 }
-            }
 
-            // Small request: decompress into internal buffer
-            self.output_buffer_pos = 0;
-            self.output_buffer_size = 0;
-
-            while self.output_buffer_size < self.output_buffer.len() {
-                // Scope the strm borrow
-                let ret = {
-                    let strm = self.zstream.get_mut();
-
-                    if strm.avail_in == 0 {
-                        let bytes_read = self.file.read(&mut self.input_buffer[..])?;
-                        if bytes_read == 0 {
-                            if self.output_buffer_size > 0 {
-                                break;
-                            }
-                            return Ok(total_copied);
-                        }
-                        self.file_offset += bytes_read as u64;
-                        strm.avail_in = bytes_read as u32;
-                        strm.next_in = self.input_buffer.as_mut_ptr();
-                    }
-
-                    strm.next_out =
-                        unsafe { self.output_buffer.as_mut_ptr().add(self.output_buffer_size) };
-                    strm.avail_out = (self.output_buffer.len() - self.output_buffer_size) as u32;
-
-                    let ret = unsafe { inflate(strm, Z_NO_FLUSH) };
-                    let produced = (self.output_buffer.len() - self.output_buffer_size)
-                        - strm.avail_out as usize;
-                    self.output_buffer_size += produced;
-
-                    ret
-                }; // strm borrow ends here
-
-                if ret == Z_OK || ret == Z_BUF_ERROR {
-                    continue;
-                } else if ret == Z_STREAM_END {
-                    // Now we can call other methods on self
-                    let avail_in = self.zstream.get_mut().avail_in;
-                    if !self.multi_member || (avail_in == 0 && self.is_eof()?) {
-                        break;
-                    }
-
-                    if !self.skip_gzip_header()? {
-                        break;
-                    }
-
-                    self.zstream.reset()?;
-                    continue;
-                } else {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("inflate error: {}", ret),
-                    ));
+                if !self.skip_gzip_header()? {
+                    return Ok(total_copied);
                 }
+
+                self.zstream.reset()?;
+                continue;
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("inflate error: {}", ret),
+                ));
             }
         }
 
