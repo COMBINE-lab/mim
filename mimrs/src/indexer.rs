@@ -231,6 +231,7 @@ fn deflate_index_build<R: BufRead>(
         if state.mode == DecompressionMode::NONE {
             state.mode = match input_buf[0] {
                 b if b & 0x0f == 8 => DecompressionMode::ZLIB,
+                // gzip starts with 1F8B
                 0x1f => DecompressionMode::GZIP,
                 _ => DecompressionMode::RAW,
             };
@@ -256,6 +257,7 @@ fn deflate_index_build<R: BufRead>(
             } else {
                 // If the last loop reached end-of-stream and there is more data, start a new member.
                 // FIXME: Does `reset_inflate` touch `avail_in`?
+                // TODO: Move back to end of the loop?
                 handle_gzip_member_boundary(&mut state, &mut ret);
                 check_error(ret)?;
 

@@ -21,9 +21,9 @@ pub struct DeflateCheckPoint {
     pub plain_pos: i64,
     /// Byte offset in the compressed file where this chunk starts.
     pub gz_pos: i64,
-    /// TODO: For which of the two streams is this? Can the other one also be unaligned?
+    /// Number of spare bits in the compressed stream.
     pub bits: u8,
-    /// Number of bytes in the window that are used as a dictionary.
+    /// Number of bytes in the window that are used as context for LZ.
     pub window_size: u32,
     /// The preceding 32KiB (or less) window for deflate state.
     pub window: Vec<u8>,
@@ -39,7 +39,7 @@ pub struct RecordCheckpoint {
     pub next_record_pos: u64,
 }
 
-#[derive(Default, bincode::Encode, bincode::Decode, PartialEq, Eq, Clone, Copy)]
+#[derive(Default, bincode::Encode, bincode::Decode, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum DecompressionMode {
     #[default]
     NONE = 0,

@@ -49,7 +49,7 @@ impl RecordCounter {
                 b'>' => Type::Fasta,
                 b'@' => Type::Fastq,
                 b => {
-                    panic!("Unknown first byte {b} of fastx file.");
+                    panic!("Unknown first byte {b} ({}) of fastx file.", b as char);
                 }
             }
         }
