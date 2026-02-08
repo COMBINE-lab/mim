@@ -18,10 +18,12 @@ use std::path::Path;
 use std::ptr;
 use tracing::{debug, info, trace};
 
-/// Output up to 32kiB of decompressed data at a time.
-const WINSIZE: usize = 32768;
-/// Process 16kB of gz file at a time.
-const CHUNK: usize = 16384;
+/// Read 32kB of gz file at a time.
+const INPUT_BUF_SIZE: usize = 128 * 1024;
+/// Decompress up to 128kB of output at a time.
+const OUTPUT_BUF_SIZE: usize = 256 * 1024;
+/// Context window size for the index.
+const WINSIZE: usize = 32 * 1024;
 
 /// Metadata structure that is CBOR json-encoded.
 ///
@@ -88,7 +90,7 @@ fn add_point(
     gz_pos: i64,
     plain_pos: i64,
     gzip_member_start_pos: i64,
-    output_ringbuf: &[u8; WINSIZE],
+    output_ringbuf: &[u8; OUTPUT_BUF_SIZE],
     strm: &zlib::z_stream,
     chunk_size: i64,
 ) -> Result<(), IndexError> {
@@ -99,13 +101,14 @@ fn add_point(
     {
         // 'unroll' the `output_ringbuf` into `window`.
         // The last `strm.avail_out` bytes are the oldest, and the ones before are new.
-        let recent = WINSIZE - strm.avail_out as usize;
+        let recent = OUTPUT_BUF_SIZE - strm.avail_out as usize;
         let prefix_copy = recent.min(window_size);
         window[window_size - prefix_copy..]
             .copy_from_slice(&output_ringbuf[recent - prefix_copy..recent]);
         // Take the rest from the suffix.
         let suffix_copy = window_size - prefix_copy;
-        window[..suffix_copy].copy_from_slice(&output_ringbuf[WINSIZE - suffix_copy..WINSIZE]);
+        window[..suffix_copy]
+            .copy_from_slice(&output_ringbuf[OUTPUT_BUF_SIZE - suffix_copy..OUTPUT_BUF_SIZE]);
     }
 
     // TODO:??
@@ -121,9 +124,8 @@ fn add_point(
 
     index.num_checkpoints += 1;
 
-    if index.num_checkpoints % 10 == 0 {
-        trace!(
-            "adding access point {} at {} (read) {} (written); distance {} vs chunk size {}",
+    trace!(
+            "adding access point {} at {} (read) {} (written); distance {} vs chunk size {}  | window {window_size}",
             index.num_checkpoints,
             gz_pos,
             plain_pos,
@@ -135,7 +137,6 @@ fn add_point(
                 }),
             chunk_size
         );
-    }
 
     Ok(())
 }
@@ -144,9 +145,9 @@ struct DecompressionState {
     strm: zlib::z_stream,
     mode: DecompressionMode,
     /// Buffer for reading chunks of the gz file.
-    input_buf: [u8; CHUNK],
+    input_buf: [u8; INPUT_BUF_SIZE],
     /// Ringbuffer for decompression.
-    output_ringbuf: [u8; WINSIZE],
+    output_ringbuf: [u8; OUTPUT_BUF_SIZE],
 
     /// Total number of bytes read from the input gz stream.
     gz_bytes_read: i64,
@@ -169,12 +170,12 @@ impl DecompressionState {
 
         Self {
             strm,
-            input_buf: [0u8; CHUNK],
+            input_buf: [0u8; INPUT_BUF_SIZE],
             gz_bytes_read: 0,
             plain_bytes_out: 0,
             mode: DecompressionMode::NONE,
             last_checkpoint_pos: 0,
-            output_ringbuf: [0u8; WINSIZE],
+            output_ringbuf: [0u8; OUTPUT_BUF_SIZE],
             gzip_member_start: 0,
         }
     }
@@ -253,6 +254,7 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
                     index.num_checkpoints
                 );
             }
+            trace!("Read {} bytes", bytes_read);
 
             // Hash the gzip file itself.
             hasher.update(&state.input_buf[..bytes_read]);
@@ -287,7 +289,7 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
 
         // Wrap around the ring buffer.
         if state.strm.avail_out == 0 {
-            state.strm.avail_out = WINSIZE as u32;
+            state.strm.avail_out = OUTPUT_BUF_SIZE as u32;
             state.strm.next_out = state.output_ringbuf.as_mut_ptr();
         }
 
@@ -299,6 +301,7 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
             ret = unsafe { zlib::inflate(&mut state.strm, zlib::Z_BLOCK) };
             let after = state.strm.avail_out as i64;
             let produced = before - after;
+            trace!("Produced {} bytes", produced);
             state.plain_bytes_out += produced;
             // NOTE: Tracking: https://github.com/trifectatechfoundation/zlib-rs/issues/439
             // this *does not* seem to be necessary any longer, but I'm keeping it here just for
@@ -317,12 +320,15 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
             }
             // FIXME: Do something with the record counting.
             (num_records, first_record_offset) = record_counter.push_bytes(
-                &state.output_ringbuf[WINSIZE - before as usize..WINSIZE - after as usize],
+                &state.output_ringbuf
+                    [OUTPUT_BUF_SIZE - before as usize..OUTPUT_BUF_SIZE - after as usize],
             );
         }
 
         // Check if we should add an access point
         // FIXME: Doesn't this create a checkpoint right after the first read bytes of the file?
+        // FIXME: What does ==0x80 mean? => The end of a gzip block. Is this ever not true?
+        // What are the implications of blocks being 32kB? (are they?)
         if (state.strm.data_type & 0xc0) == 0x80
             && (index.num_checkpoints == 0
                 || state.plain_bytes_out - state.last_checkpoint_pos >= chunk_size)
