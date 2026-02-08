@@ -67,7 +67,6 @@ impl ZStreamWrapper {
     }
 
     fn set_dictionary(&mut self, dict: &[u8]) -> io::Result<()> {
-        let _state_ptr = unsafe { (*self.stream).state };
         let ret = unsafe { inflateSetDictionary(self.stream, dict.as_ptr(), dict.len() as u32) };
 
         if ret != Z_OK {
@@ -440,41 +439,32 @@ impl io::Read for GzipStreamReader {
     /// Read decompressed data from the stream
     /// Handles multi-member gzip files (including BGZF)
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if buffer.is_empty() {
-            return Ok(0);
-        }
-
         let len = buffer.len();
         let mut total_copied = 0;
 
         while total_copied < len {
             let remaining = len - total_copied;
 
-            // Scope the strm borrow
-            let ret = {
-                let strm = self.zstream.get_mut();
+            let strm = self.zstream.get_mut();
 
-                if strm.avail_in == 0 {
-                    let bytes_read = self.file.read(&mut self.input_buffer[..])?;
-                    if bytes_read == 0 {
-                        return Ok(total_copied);
-                    }
-                    self.file_offset += bytes_read as u64;
-                    strm.avail_in = bytes_read as u32;
-                    strm.next_in = self.input_buffer.as_mut_ptr();
+            if strm.avail_in == 0 {
+                let bytes_read = self.file.read(&mut self.input_buffer[..])?;
+                if bytes_read == 0 {
+                    return Ok(total_copied);
                 }
+                self.file_offset += bytes_read as u64;
+                strm.avail_in = bytes_read as u32;
+                strm.next_in = self.input_buffer.as_mut_ptr();
+            }
 
-                strm.next_out = buffer[total_copied..].as_mut_ptr();
-                strm.avail_out = remaining as u32;
+            strm.next_out = buffer[total_copied..].as_mut_ptr();
+            strm.avail_out = remaining as u32;
 
-                let ret = unsafe { inflate(strm, Z_NO_FLUSH) };
-                let produced = remaining - strm.avail_out as usize;
+            let ret = unsafe { inflate(strm, Z_NO_FLUSH) };
+            let produced = remaining - strm.avail_out as usize;
 
-                total_copied += produced;
-                self.uncompressed_offset += produced as u64;
-
-                ret
-            }; // strm borrow ends here
+            total_copied += produced;
+            self.uncompressed_offset += produced as u64;
 
             if ret == Z_OK || ret == Z_BUF_ERROR {
                 continue;

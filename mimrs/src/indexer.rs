@@ -8,7 +8,6 @@ use crate::record_counter;
 //use libz_ng_sys::z_stream;
 //use libz_ng_sys::{self as zlib, Z_OK};
 
-use libz_rs_sys::{self as zlib};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::fs::File;
@@ -93,7 +92,7 @@ fn add_point(
     plain_pos: i64,
     gzip_member_start_pos: i64,
     output_ringbuf: &[u8; OUTPUT_BUF_SIZE],
-    strm: &zlib::z_stream,
+    strm: &libz_rs_sys::z_stream,
     chunk_size: i64,
 ) -> Result<(), IndexError> {
     // Context window does not go before the start of the gzip member.
@@ -144,7 +143,7 @@ fn add_point(
 }
 
 struct DecompressionState {
-    strm: zlib::z_stream,
+    strm: libz_rs_sys::z_stream,
     mode: DecompressionMode,
 
     /// Ringbuffer for decompression.
@@ -162,7 +161,7 @@ struct DecompressionState {
 
 impl DecompressionState {
     fn new() -> Self {
-        let mut strm: zlib::z_stream = unsafe { std::mem::zeroed() };
+        let mut strm: libz_rs_sys::z_stream = unsafe { std::mem::zeroed() };
         strm.zalloc = None;
         strm.zfree = None;
         strm.opaque = ptr::null_mut();
@@ -185,7 +184,7 @@ impl DecompressionState {
 ///
 /// Must only be called if there is more data available.
 fn handle_gzip_member_boundary(state: &mut DecompressionState, ret: &mut i32) {
-    if *ret == zlib::Z_STREAM_END && state.mode == DecompressionMode::GZIP {
+    if *ret == libz_rs_sys::Z_STREAM_END && state.mode == DecompressionMode::GZIP {
         trace!(
             "Z_STREAM_END detected: avail_in={}, beg={}, totout={}",
             state.strm.avail_in, state.gzip_member_start, state.out_pos
@@ -194,10 +193,11 @@ fn handle_gzip_member_boundary(state: &mut DecompressionState, ret: &mut i32) {
         // There is more input after the end of a gzip member
         // Reset the inflate state to read another gzip member
         // On success, this sets ret back to Z_OK to continue decompressing
-        *ret = unsafe { zlib::inflateReset2(&mut state.strm, DecompressionMode::GZIP as i32) };
+        *ret =
+            unsafe { libz_rs_sys::inflateReset2(&mut state.strm, DecompressionMode::GZIP as i32) };
         trace!("Called inflateReset2, ret={}", ret);
 
-        if *ret == zlib::Z_OK {
+        if *ret == libz_rs_sys::Z_OK {
             state.gzip_member_start = state.out_pos; // Reset history
             trace!("Reset beg to {}", state.gzip_member_start);
         }
@@ -215,7 +215,7 @@ fn deflate_index_build<R: BufRead>(
 
     let mut record_counter = record_counter::RecordCounter::new();
 
-    let mut ret: i32 = zlib::Z_OK;
+    let mut ret: i32 = libz_rs_sys::Z_OK;
 
     let mut num_records = 0;
 
@@ -236,22 +236,13 @@ fn deflate_index_build<R: BufRead>(
             };
 
             unsafe {
-                check_error(zlib::inflateInit2_(
+                check_error(libz_rs_sys::inflateInit2_(
                     &mut state.strm,
                     state.mode as i32,
-                    zlib::zlibVersion(),
-                    std::mem::size_of::<zlib::z_stream>() as i32,
+                    libz_rs_sys::zlibVersion(),
+                    std::mem::size_of::<libz_rs_sys::z_stream>() as i32,
                 ))
             }?;
-        }
-
-        // FIXME: This can also trigger randomly, not only at start of file?
-        // And gzip headers can occur also in the middle of file reads?
-        if let [0x1f, 0x8b, ..] = input_buf {
-            trace!(
-                "Read new gzip header at totin={}, totout={}, checkpoint={}",
-                state.in_pos, state.out_pos, index.num_checkpoints
-            );
         }
 
         // Hash the gzip file itself.
@@ -276,7 +267,7 @@ fn deflate_index_build<R: BufRead>(
 
                 let in_before = state.strm.avail_in as i64;
                 let out_before = state.strm.avail_out as i64;
-                ret = unsafe { zlib::inflate(&mut state.strm, zlib::Z_BLOCK) };
+                ret = unsafe { libz_rs_sys::inflate(&mut state.strm, libz_rs_sys::Z_BLOCK) };
                 let in_after = state.strm.avail_in as i64;
                 let out_after = state.strm.avail_out as i64;
                 let consumed = in_before - in_after;
@@ -295,12 +286,12 @@ fn deflate_index_build<R: BufRead>(
                     // especially if the member boundary doesn't align with a block boundary.
                     // If we produced no output and we're in GZIP mode, treat this as Z_STREAM_END
                     // to allow processing of the next member.
-                    if ret == zlib::Z_DATA_ERROR
+                    if ret == libz_rs_sys::Z_DATA_ERROR
                         && state.mode == DecompressionMode::GZIP
                         && produced == 0
                     {
                         // This is likely a member boundary issue, treat as end of stream
-                        ret = zlib::Z_STREAM_END;
+                        ret = libz_rs_sys::Z_STREAM_END;
                         trace!("HERE");
                     }
                 }
@@ -359,11 +350,12 @@ fn deflate_index_build<R: BufRead>(
         next_record_pos: index.plain_size as u64,
     });
 
-    unsafe { zlib::inflateEnd(&mut state.strm) };
+    // FIXME: We probably have a memory leak now when this is not called on early aborts.
+    unsafe { libz_rs_sys::inflateEnd(&mut state.strm) };
 
     // TODO: Inline this above.
-    if ret != zlib::Z_STREAM_END {
-        assert!(ret != zlib::Z_OK);
+    if ret != libz_rs_sys::Z_STREAM_END {
+        assert!(ret != libz_rs_sys::Z_OK);
         check_error(ret)?;
     }
 
@@ -386,10 +378,10 @@ fn deflate_index_build<R: BufRead>(
 
 fn check_error(ret: i32) -> Result<(), IndexError> {
     match ret {
-        zlib::Z_OK => Ok(()),
-        zlib::Z_NEED_DICT => Err(IndexError::DataError),
-        zlib::Z_MEM_ERROR => Err(IndexError::OutOfMemory),
-        zlib::Z_BUF_ERROR => Err(IndexError::PrematureEnd),
+        libz_rs_sys::Z_OK => Ok(()),
+        libz_rs_sys::Z_NEED_DICT => Err(IndexError::DataError),
+        libz_rs_sys::Z_MEM_ERROR => Err(IndexError::OutOfMemory),
+        libz_rs_sys::Z_BUF_ERROR => Err(IndexError::PrematureEnd),
         _ => Err(IndexError::ZlibError(ret)),
     }
 }
