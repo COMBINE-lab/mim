@@ -13,7 +13,6 @@ use serde_json::Value as JsonValue;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
-use std::ptr;
 use tracing::{debug, info, trace};
 
 /// Buffer size for the input file.
@@ -164,9 +163,6 @@ impl DecompressionState {
         let mut strm: libz_rs_sys::z_stream = unsafe { std::mem::zeroed() };
         strm.zalloc = None;
         strm.zfree = None;
-        strm.opaque = ptr::null_mut();
-        strm.avail_in = 0;
-        strm.next_in = ptr::null_mut();
 
         Self {
             strm,
@@ -269,6 +265,11 @@ fn deflate_index_build<R: BufRead>(
                 let out_after = state.strm.avail_out as i64;
                 let consumed = in_before - in_after;
                 let produced = out_before - out_after;
+
+                trace!(
+                    "STATE: {:>16b} ret {ret} consumed {}  produced {}",
+                    state.strm.data_type, consumed, produced
+                );
 
                 state.in_pos += consumed;
                 state.out_pos += produced;

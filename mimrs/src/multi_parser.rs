@@ -1,3 +1,4 @@
+//! FIXME: Split work by chunk-size, not just by chunk-count.
 use crate::gzip_reader::GzipStreamReader;
 use crate::mim_types::{MimIndex, read_mim_index};
 use anyhow::Result;

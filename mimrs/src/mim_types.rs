@@ -69,7 +69,6 @@ pub struct MimIndex {
     /// Blake3 hash of the plain decompressed data.
     pub plain_hash: Blake3Hash,
 
-    /// FIXME: -15 for raw, 15 for zlib, 31 for gzip
     pub mode: DecompressionMode,
 
     /// The decompression checkpoints. Most of the size is here.

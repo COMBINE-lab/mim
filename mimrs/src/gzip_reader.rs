@@ -1,66 +1,45 @@
-use crate::indexer::detect_mode;
 use crate::mim_types::{DecompressionMode, MimIndex};
-use libz_rs_sys::{
-    Z_BUF_ERROR, Z_OK, Z_STREAM_END, inflateEnd, inflatePrime, inflateReset, inflateSetDictionary,
-    z_stream,
-};
 use std::fs::File;
-use std::io::{self, BufReader, Read, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-use std::ptr;
 use tracing::trace;
 
 const BUFSIZE: usize = 131072;
 
 /// Safe wrapper around zlib's z_stream
 struct ZStreamWrapper {
-    stream: *mut z_stream,
+    strm: libz_rs_sys::z_stream,
     initialized: bool,
 }
 
 impl ZStreamWrapper {
     fn new() -> Self {
-        // Allocate memory for z_stream on the heap
-        let layout = std::alloc::Layout::new::<z_stream>();
-        let ptr = unsafe { std::alloc::alloc_zeroed(layout) as *mut z_stream };
-
-        if ptr.is_null() {
-            panic!("Failed to allocate memory for z_stream");
-        }
+        let mut strm: libz_rs_sys::z_stream = unsafe { std::mem::zeroed() };
+        strm.zalloc = None;
+        strm.zfree = None;
 
         ZStreamWrapper {
-            stream: ptr,
+            strm,
             initialized: false,
         }
     }
 
     fn init(&mut self, mode: DecompressionMode) -> io::Result<()> {
         if self.initialized {
-            unsafe { inflateEnd(self.stream) };
-        }
-
-        // Zero out the memory
-        unsafe {
-            ptr::write_bytes(self.stream, 0, 1);
+            unsafe { libz_rs_sys::inflateEnd(&mut self.strm) };
         }
 
         let ret = unsafe {
             libz_rs_sys::inflateInit2_(
-                self.stream,
+                &mut self.strm,
                 mode as i32,
                 libz_rs_sys::zlibVersion(),
-                std::mem::size_of::<z_stream>() as i32,
+                std::mem::size_of::<libz_rs_sys::z_stream>() as i32,
             )
         };
 
-        if ret != Z_OK {
+        if ret != libz_rs_sys::Z_OK {
             return Err(io::Error::other(format!("inflateInit2 failed: {}", ret)));
-        }
-
-        let state_ptr = unsafe { (*self.stream).state };
-
-        if state_ptr.is_null() {
-            return Err(io::Error::other("inflateInit2 succeeded but state is null"));
         }
 
         self.initialized = true;
@@ -68,9 +47,11 @@ impl ZStreamWrapper {
     }
 
     fn set_dictionary(&mut self, dict: &[u8]) -> io::Result<()> {
-        let ret = unsafe { inflateSetDictionary(self.stream, dict.as_ptr(), dict.len() as u32) };
+        let ret = unsafe {
+            libz_rs_sys::inflateSetDictionary(&mut self.strm, dict.as_ptr(), dict.len() as u32)
+        };
 
-        if ret != Z_OK {
+        if ret != libz_rs_sys::Z_OK {
             return Err(io::Error::other(format!(
                 "inflateSetDictionary failed: {}",
                 ret
@@ -81,17 +62,13 @@ impl ZStreamWrapper {
     }
 
     fn prime(&mut self, bits: i32, value: i32) -> io::Result<()> {
-        let ret = unsafe { inflatePrime(self.stream, bits, value) };
+        let ret = unsafe { libz_rs_sys::inflatePrime(&mut self.strm, bits, value) };
 
-        if ret != Z_OK {
+        if ret != libz_rs_sys::Z_OK {
             return Err(io::Error::other(format!("inflatePrime failed: {}", ret)));
         }
 
         Ok(())
-    }
-
-    fn get_mut(&mut self) -> &mut z_stream {
-        unsafe { &mut *self.stream }
     }
 }
 
@@ -100,7 +77,7 @@ impl Drop for ZStreamWrapper {
     fn drop(&mut self) {
         if self.initialized {
             unsafe {
-                inflateEnd(self.stream);
+                libz_rs_sys::inflateEnd(&mut self.strm);
             }
         }
     }
@@ -111,12 +88,8 @@ pub struct GzipStreamReader {
     file: BufReader<File>,
     zstream: ZStreamWrapper,
     uncompressed_offset: u64,
-    mode: DecompressionMode,
-
-    // Input buffer for compressed data
-    input_buffer: Box<[u8; BUFSIZE]>, // 128KB
-
-    file_offset: u64,
+    file_mode: DecompressionMode,
+    current_mode: DecompressionMode,
     // file_buffer: Option<Box<[u8]>>,
 }
 
@@ -150,11 +123,8 @@ impl GzipStreamReader {
 
         // NOTE: We start directly at RAW DEFLATE blocks, and skip any gzip headers.
         file.seek(SeekFrom::Start(seek_pos as u64))?;
-        let mut file_offset = seek_pos as u64;
         let mut zstream = ZStreamWrapper::new();
         zstream.init(DecompressionMode::RAW)?;
-
-        let input_buffer = Box::new([0u8; BUFSIZE]);
 
         // Set the decompression dictionary FIRST (before any inflation)
         if checkpoint.plain_pos > 0 {
@@ -166,7 +136,6 @@ impl GzipStreamReader {
             // We're starting mid-byte. Read that byte and prime the bit buffer.
             let mut last_byte = [0u8; 1];
             file.read_exact(&mut last_byte)?;
-            file_offset += 1;
 
             // Use inflatePrime exactly as the C++ code does:
             let bit_value = (last_byte[0] >> (8 - checkpoint.bits)) as i32;
@@ -177,9 +146,8 @@ impl GzipStreamReader {
             file,
             zstream,
             uncompressed_offset,
-            input_buffer,
-            file_offset,
-            mode: DecompressionMode::RAW,
+            file_mode: index.mode,
+            current_mode: DecompressionMode::RAW,
         })
     }
     /// Get current uncompressed offset
@@ -193,85 +161,79 @@ impl io::Read for GzipStreamReader {
     /// Handles multi-member gzip files (including BGZF)
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let len = buffer.len();
+        // FIXME: Handle the chunk-end: down-size buffer as needed.
         let mut total_copied = 0;
+
+        self.zstream.strm.next_out = buffer.as_mut_ptr();
+        self.zstream.strm.avail_out = len as u32;
 
         while total_copied < len {
             let remaining = len - total_copied;
 
-            let strm = self.zstream.get_mut();
+            let strm = &mut self.zstream.strm;
 
-            if strm.avail_in == 0 {
-                let bytes_read = self.file.read(&mut self.input_buffer[..])?;
-                if bytes_read == 0 {
-                    return Ok(total_copied);
-                }
-                self.file_offset += bytes_read as u64;
-                strm.avail_in = bytes_read as u32;
-                strm.next_in = self.input_buffer.as_mut_ptr();
+            let input_buffer = self.file.fill_buf()?;
+            if input_buffer.is_empty() {
+                return Ok(total_copied);
             }
-
-            strm.next_out = buffer[total_copied..].as_mut_ptr();
-            strm.avail_out = remaining as u32;
-
-            let in_before = strm.avail_in as i64;
-            let out_before = strm.avail_out as i64;
-
+            strm.avail_in = input_buffer.len() as u32;
+            strm.next_in = input_buffer.as_ptr();
             // WAS: Z_NO_FLUSH
             let ret = unsafe { libz_rs_sys::inflate(strm, libz_rs_sys::Z_BLOCK) };
-            let in_after = strm.avail_in as i64;
-            let out_after = strm.avail_out as i64;
-            let consumed = in_before - in_after;
-            let produced = out_before - out_after;
+            let consumed = input_buffer.len() as i64 - strm.avail_in as i64;
+            let produced = remaining as i64 - strm.avail_out as i64;
+            self.file.consume(consumed as usize);
+
+            trace!(
+                "STATE: {:>16b} ret {ret} consumed {}  produced {}",
+                strm.data_type, consumed, produced
+            );
 
             total_copied += produced as usize;
             self.uncompressed_offset += produced as u64;
 
-            if ret == Z_OK || ret == Z_BUF_ERROR {
-                continue;
-            } else if ret == Z_STREAM_END {
-                trace!(
-                    "Z_STREAM_END detected: avail_in={}, beg={}, totout={}",
-                    strm.avail_in, in_after, out_after
-                );
+            match ret {
+                libz_rs_sys::Z_OK | libz_rs_sys::Z_BUF_ERROR => continue,
+                libz_rs_sys::Z_STREAM_END => {
+                    trace!("Z_STREAM_END detected");
 
-                if self.mode == DecompressionMode::RAW {
-                    if strm.avail_in == 0 {
-                        let bytes_read = self.file.read(&mut self.input_buffer[..])?;
-                        if bytes_read == 0 {
-                            return Ok(total_copied);
-                        }
-                        self.file_offset += bytes_read as u64;
-                        strm.avail_in = bytes_read as u32;
-                        strm.next_in = self.input_buffer.as_mut_ptr();
+                    // Skip 8-byte CRC suffix that ends the zlib/gzip block.
+                    // Only needed if we started in raw deflate mode -- otherwise inflate()
+                    // calls will already handle this.
+                    if self.current_mode == DecompressionMode::RAW
+                        && self.file_mode != DecompressionMode::RAW
+                    {
+                        // Read the 8-byte CRC.
+                        self.file.read_exact(&mut [0u8; 8])?;
+                        self.current_mode = self.file_mode;
                     }
 
-                    // Try skipping the 8-byte CRC, and then continue parsing in GZIP mode.
-                    assert!(strm.avail_in >= 8);
-                    strm.avail_in -= 8;
-                    strm.next_in = unsafe { strm.next_in.add(8) };
-                    if strm.avail_in == 0 {
+                    // Check if we're at the end.
+                    let input_buffer = self.file.fill_buf()?;
+                    if input_buffer.is_empty() {
                         return Ok(total_copied);
                     }
-                    self.mode = detect_mode(
-                        &self.input_buffer[self.input_buffer.len() - strm.avail_in as usize..],
-                    );
-                }
 
-                let ret =
-                    unsafe { libz_rs_sys::inflateReset2(self.zstream.stream, self.mode as i32) };
-                if ret != Z_OK {
+                    // If not at the end, reset libz.
+                    let ret = unsafe {
+                        libz_rs_sys::inflateReset2(&mut self.zstream.strm, self.current_mode as i32)
+                    };
+                    if ret != libz_rs_sys::Z_OK {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("inflate error: {}", ret),
+                        ));
+                    }
+                    continue;
+                }
+                _ => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("inflate error: {}", ret),
                     ));
                 }
-                continue;
-            } else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("inflate error: {}", ret),
-                ));
             }
+            // unreachable
         }
 
         Ok(total_copied)
