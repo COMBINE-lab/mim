@@ -1,5 +1,5 @@
 use crate::gzip_reader::GzipStreamReader;
-use crate::mim_types::{read_mim_index, MimIndex};
+use crate::mim_types::{MimIndex, read_mim_index};
 use anyhow::Result;
 use lender::prelude::*;
 use needletail::errors::ParseError;

@@ -6,7 +6,7 @@ use mim::mim_types::read_mim_index;
 use mim::multi_parser::{MultiPairParser, MultiParser, ReadIter};
 use std::io;
 use std::sync::Arc;
-use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 
 use std::io::Read;
 use std::path::PathBuf;

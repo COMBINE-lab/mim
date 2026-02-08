@@ -4,7 +4,7 @@ use std::{
     thread,
 };
 
-use crate::indexer::{build_index, IndexError};
+use crate::indexer::{IndexError, build_index};
 
 use super::multi_parser::MultiParser;
 

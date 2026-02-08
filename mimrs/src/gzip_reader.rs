@@ -1,7 +1,7 @@
 use crate::mim_types::MimIndex;
 use libz_rs_sys::{
-    inflate, inflateEnd, inflatePrime, inflateReset, inflateSetDictionary, z_stream, zlibVersion,
-    Z_BUF_ERROR, Z_NO_FLUSH, Z_OK, Z_STREAM_END,
+    Z_BUF_ERROR, Z_NO_FLUSH, Z_OK, Z_STREAM_END, inflate, inflateEnd, inflatePrime, inflateReset,
+    inflateSetDictionary, z_stream, zlibVersion,
 };
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
