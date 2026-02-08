@@ -1,4 +1,4 @@
-use crate::mim_types::MimIndex;
+use crate::mim_types::{DecompressionMode, MimIndex};
 use libz_rs_sys::{
     Z_BUF_ERROR, Z_NO_FLUSH, Z_OK, Z_STREAM_END, inflate, inflateEnd, inflatePrime, inflateReset,
     inflateSetDictionary, z_stream, zlibVersion,
@@ -32,7 +32,7 @@ impl ZStreamWrapper {
         }
     }
 
-    fn init(&mut self, window_bits: i32) -> io::Result<()> {
+    fn init(&mut self, mode: DecompressionMode) -> io::Result<()> {
         if self.initialized {
             unsafe { inflateEnd(self.stream) };
         }
@@ -43,11 +43,10 @@ impl ZStreamWrapper {
         }
 
         let ret = unsafe {
-            let version = zlibVersion();
             libz_rs_sys::inflateInit2_(
                 self.stream,
-                window_bits,
-                version,
+                mode as i32,
+                libz_rs_sys::zlibVersion(),
                 std::mem::size_of::<z_stream>() as i32,
             )
         };
@@ -172,7 +171,8 @@ impl GzipStreamReader {
         // Initialize decompressor in raw deflate mode (-15)
         // Always use raw deflate when starting from a checkpoint
         let mut zstream = ZStreamWrapper::new();
-        zstream.init(-15)?;
+        // FIXME: Was RAW??
+        zstream.init(DecompressionMode::RAW)?;
 
         let mut input_buffer = Box::new([0u8; BUFSIZE]);
 
