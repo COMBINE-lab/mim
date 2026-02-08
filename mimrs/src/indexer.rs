@@ -322,6 +322,21 @@ fn deflate_index_build<R: BufRead>(
                 && (index.num_checkpoints == 0
                     || state.out_pos - state.last_checkpoint_pos >= chunk_size)
             {
+                // If the previous checkpoint does not have a corresponding record start, drop it.
+                if let Some(RecordCheckpoint {
+                    next_record_pos: u64::MAX,
+                    ..
+                }) = index.record_boundaries.last_mut()
+                {
+                    debug!(
+                        "Dropping checkpoint {} at out_pos={} with no record start",
+                        index.num_checkpoints, state.out_pos
+                    );
+                    index.checkpoints.pop();
+                    index.record_boundaries.pop();
+                    index.num_checkpoints -= 1;
+                }
+
                 add_point(
                     &mut index,
                     state.in_pos,
