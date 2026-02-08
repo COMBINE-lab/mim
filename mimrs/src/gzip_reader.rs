@@ -191,30 +191,7 @@ impl GzipStreamReader {
             // Use inflatePrime exactly as the C++ code does:
             let bit_value = (last_byte[0] >> (8 - checkpoint.bits)) as i32;
             zstream.prime(checkpoint.bits as i32, bit_value)?;
-
-            // Now read the next chunk of data into our buffer for inflate to use
-            let bytes_read = file.read(&mut input_buffer[..])?;
-
-            if bytes_read > 0 {
-                file_offset += bytes_read as u64;
-                let strm = zstream.get_mut();
-                strm.avail_in = bytes_read as u32;
-                strm.next_in = input_buffer.as_mut_ptr();
-            } else {
-                let strm = zstream.get_mut();
-                strm.avail_in = 0;
-                strm.next_in = ptr::null_mut();
-            }
-        } else {
-            // No bit alignment needed, start with clean byte boundary
-            let strm = zstream.get_mut();
-            strm.avail_in = 0;
-            strm.next_in = ptr::null_mut();
         }
-
-        // Set up large FILE buffer for performance
-        //let file_buffer_size = 256 * 1024; // 256KB
-        //let file_buffer = vec![0u8; file_buffer_size].into_boxed_slice();
 
         Ok(GzipStreamReader {
             file,
@@ -222,7 +199,6 @@ impl GzipStreamReader {
             uncompressed_offset,
             input_buffer,
             file_offset,
-            //file_buffer: Some(file_buffer),
         })
     }
 
