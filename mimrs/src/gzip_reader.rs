@@ -125,7 +125,6 @@ pub struct GzipStreamReader {
     input_buffer: Box<[u8; BUFSIZE]>, // 128KB
 
     file_offset: u64,
-    multi_member: bool,
     // file_buffer: Option<Box<[u8]>>,
 }
 
@@ -223,7 +222,6 @@ impl GzipStreamReader {
             uncompressed_offset,
             input_buffer,
             file_offset,
-            multi_member: true,
             //file_buffer: Some(file_buffer),
         })
     }
@@ -424,11 +422,6 @@ impl GzipStreamReader {
         Ok(())
     }
 
-    /// Set whether to check for multi-member gzip files
-    pub fn set_multi_member(&mut self, multi_member: bool) {
-        self.multi_member = multi_member;
-    }
-
     /// Get current uncompressed offset
     pub fn uncompressed_offset(&self) -> u64 {
         self.uncompressed_offset
@@ -471,7 +464,7 @@ impl io::Read for GzipStreamReader {
             } else if ret == Z_STREAM_END {
                 // Now we can call other methods on self
                 let avail_in = self.zstream.get_mut().avail_in;
-                if !self.multi_member || (avail_in == 0 && self.is_eof()?) {
+                if avail_in == 0 && self.is_eof()? {
                     return Ok(total_copied);
                 }
 
@@ -495,9 +488,6 @@ impl io::Read for GzipStreamReader {
 // Example usage
 pub fn example_usage(gz_file: &Path, index: &MimIndex, checkpoint_idx: usize) -> io::Result<()> {
     let mut reader = GzipStreamReader::open_at_checkpoint(gz_file, index, checkpoint_idx)?;
-
-    // Optionally disable multi-member checking for single-member files
-    // reader.set_multi_member(false);
 
     let mut buffer = vec![0u8; BUFSIZE]; // 128KB
     let mut total_read = 0;
