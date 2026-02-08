@@ -5,7 +5,6 @@ use crate::mim_types::{
     MIMINDEX_FILE_CONSTANT,
 };
 use crate::record_counter;
-use itertools::Itertools;
 //use libz_ng_sys::z_stream;
 //use libz_ng_sys::{self as zlib, Z_OK};
 
@@ -23,57 +22,6 @@ use tracing::{debug, info, trace};
 const WINSIZE: usize = 32768;
 /// Process 16kB of gz file at a time.
 const CHUNK: usize = 16384;
-
-// Wrapper around Read that allows peeking a single byte
-struct PeekableReader<R: Read> {
-    inner: R,
-    buffer: [u8; 1],
-    is_buffered: bool,
-}
-
-impl<R: Read> PeekableReader<R> {
-    fn new(inner: R) -> Self {
-        Self {
-            inner,
-            buffer: [0_u8],
-            is_buffered: false,
-        }
-    }
-
-    fn peek_byte(&mut self) -> io::Result<Option<u8>> {
-        if !self.is_buffered {
-            match self.inner.read(&mut self.buffer)? {
-                0 => Ok(None),
-                _ => {
-                    self.is_buffered = true;
-                    Ok(Some(self.buffer[0]))
-                }
-            }
-        } else {
-            Ok(Some(self.buffer[0]))
-        }
-    }
-}
-
-impl<R: Read> Read for PeekableReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut total = 0;
-
-        // First use the buffered byte if we have it
-        if self.is_buffered {
-            buf[total] = self.buffer[0];
-            total += 1;
-            self.is_buffered = false;
-        }
-
-        // Then read from inner if we need more
-        if total < buf.len() {
-            total += self.inner.read(&mut buf[total..])?;
-        }
-
-        Ok(total)
-    }
-}
 
 /// Metadata structure that is CBOR json-encoded.
 ///
@@ -257,52 +205,33 @@ impl DecompressionState {
     }
 }
 
-/// Handle the boundary between concatenated gzip members
-fn handle_gzip_member_boundary<R: Read>(
-    reader: &mut PeekableReader<R>,
-    state: &mut DecompressionState,
-    ret: &mut i32,
-) -> Result<(), IndexError> {
+/// Handle the boundary between concatenated gzip members.
+///
+/// Must only be called if there is more data available.
+fn handle_gzip_member_boundary(state: &mut DecompressionState, ret: &mut i32) {
     if *ret == zlib::Z_STREAM_END && state.mode == DecompressionMode::GZIP {
-        // Check if there's more data: either in buffer or by peeking into file
-        let has_avail = state.strm.avail_in > 0;
-        let has_peek = if !has_avail {
-            reader.peek_byte()?.is_some()
-        } else {
-            false
-        };
-        let has_more_data = has_avail || has_peek;
-
         trace!(
-            "Z_STREAM_END detected: avail_in={}, peek={}, has_more={}, beg={}, totout={}",
+            "Z_STREAM_END detected: avail_in={}, beg={}, totout={}",
             state.strm.avail_in,
-            has_peek,
-            has_more_data,
             state.gzip_member_start,
             state.plain_bytes_out
         );
 
-        if has_more_data {
-            // There is more input after the end of a gzip member
-            // Reset the inflate state to read another gzip member
-            // On success, this sets ret back to Z_OK to continue decompressing
-            *ret = state.reset_inflate();
-            trace!("Called inflateReset2, ret={}", ret);
+        // There is more input after the end of a gzip member
+        // Reset the inflate state to read another gzip member
+        // On success, this sets ret back to Z_OK to continue decompressing
+        *ret = state.reset_inflate();
+        trace!("Called inflateReset2, ret={}", ret);
 
-            if *ret == zlib::Z_OK {
-                state.gzip_member_start = state.plain_bytes_out; // Reset history
-                trace!("Reset beg to {}", state.gzip_member_start);
-            }
+        if *ret == zlib::Z_OK {
+            state.gzip_member_start = state.plain_bytes_out; // Reset history
+            trace!("Reset beg to {}", state.gzip_member_start);
         }
     }
-    Ok(())
 }
 
 /// Build a deflate index from a gzip file using raw zlib API
-fn deflate_index_build<R: Read>(
-    reader: &mut PeekableReader<R>,
-    chunk_size: i64,
-) -> Result<MimIndex, IndexError> {
+fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIndex, IndexError> {
     let mut hasher = blake3::Hasher::new();
     let mut index = MimIndex::new();
     let mut state = DecompressionState::new();
@@ -316,29 +245,48 @@ fn deflate_index_build<R: Read>(
         let mut num_records = 0;
         let mut first_record_offset = None;
 
-        // Assure available input
-        if state.strm.avail_in == 0 {
+        if state.strm.avail_in > 0 {
+            // If the last loop reached end-of-stream and there is more data, start a new member.
+            handle_gzip_member_boundary(&mut state, &mut ret);
+            if ret != zlib::Z_OK {
+                break 'main_loop;
+            }
+        } else {
+            // Assure available input
             let bytes_read = reader.read(&mut state.input_buf)?;
 
-            if bytes_read > 0 {
-                if bytes_read >= 2 && state.input_buf[0] == 0x1f && state.input_buf[1] == 0x8b {
-                    trace!(
-                        "Read new gzip header at totin={}, totout={}, checkpoint={}",
-                        state.gz_bytes_read,
-                        state.plain_bytes_out,
-                        index.num_checkpoints
-                    );
-                }
-
-                // FIXME: This bytes are very much NOT ascii of the original file.
-                hasher.update(&state.input_buf[..bytes_read]);
-
-                state.gz_bytes_read += bytes_read as i64;
+            // NOTE: We assume that we won't receive additional data after 0 has been returned.
+            // (Eg if the underlying file is appended to.)
+            if bytes_read == 0 {
+                break 'main_loop;
             }
 
+            // If the last loop reached end-of-stream and there is more data, start a new member.
+            // FIXME: Does `reset_inflate` touch `avail_in`?
+            handle_gzip_member_boundary(&mut state, &mut ret);
+            if ret != zlib::Z_OK {
+                break 'main_loop;
+            }
+
+            // FIXME: This can also trigger randomly, not only at start of file?
+            // And gzip headers can occur also in the middle of file reads?
+            if bytes_read >= 2 && state.input_buf[0] == 0x1f && state.input_buf[1] == 0x8b {
+                trace!(
+                    "Read new gzip header at totin={}, totout={}, checkpoint={}",
+                    state.gz_bytes_read,
+                    state.plain_bytes_out,
+                    index.num_checkpoints
+                );
+            }
+
+            // Hash the gzip file itself.
+            hasher.update(&state.input_buf[..bytes_read]);
+
+            state.gz_bytes_read += bytes_read as i64;
             state.strm.avail_in = bytes_read as u32;
             state.strm.next_in = state.input_buf.as_mut_ptr();
 
+            // FIXME: Can the mode change between gzip members?
             if state.mode == DecompressionMode::NONE && bytes_read > 0 {
                 state.mode = if state.input_buf[0] & 0x0f == 8 {
                     DecompressionMode::ZLIB
@@ -355,7 +303,7 @@ fn deflate_index_build<R: Read>(
             }
         }
 
-        // Assure available output
+        // Wrap around the ring buffer.
         if state.strm.avail_out == 0 {
             state.strm.avail_out = WINSIZE as u32;
             state.strm.next_out = state.output_ringbuf.as_mut_ptr();
@@ -417,13 +365,6 @@ fn deflate_index_build<R: Read>(
             // });
             state.last_checkpoint_pos = state.plain_bytes_out;
         }
-
-        // Handle end of gzip member
-        handle_gzip_member_boundary(reader, &mut state, &mut ret)?;
-
-        if ret != zlib::Z_OK {
-            break 'main_loop;
-        }
     }
 
     state.end_inflate();
@@ -463,11 +404,10 @@ pub fn build_index(
 ) -> Result<(), IndexError> {
     trace!("Opening file: {:?}", gzip_file);
     let file = File::open(gzip_file)?;
-    let buf_reader = BufReader::with_capacity(1024 * 1024, file);
-    let mut peekable_reader = PeekableReader::new(buf_reader);
+    let mut buf_reader = BufReader::with_capacity(1024 * 1024, file);
 
     trace!("Building deflate index...");
-    let mut index = deflate_index_build(&mut peekable_reader, chunk_size)?;
+    let mut index = deflate_index_build(&mut buf_reader, chunk_size)?;
 
     info!(
         "zran: built index with {} access points!",
