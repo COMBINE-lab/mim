@@ -9,7 +9,6 @@ use crate::record_counter;
 //use libz_ng_sys::{self as zlib, Z_OK};
 
 use libz_rs_sys::{self as zlib};
-use needletail::parse_fastx_file;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::fs::File;
@@ -216,10 +215,10 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
 
     let mut ret: i32 = zlib::Z_OK;
 
+    let mut num_records = 0;
+
     // Main decompression loop
     'main_loop: loop {
-        let mut num_records = 0;
-        let mut first_record_offset = None;
 
         if state.strm.avail_in > 0 {
             // If the last loop reached end-of-stream and there is more data, start a new member.
@@ -254,7 +253,7 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
                     index.num_checkpoints
                 );
             }
-            trace!("Read {} bytes", bytes_read);
+            // trace!("Read {} bytes", bytes_read);
 
             // Hash the gzip file itself.
             hasher.update(&state.input_buf[..bytes_read]);
@@ -301,7 +300,7 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
             ret = unsafe { zlib::inflate(&mut state.strm, zlib::Z_BLOCK) };
             let after = state.strm.avail_out as i64;
             let produced = before - after;
-            trace!("Produced {} bytes", produced);
+            // trace!("Produced {} bytes", produced);
             state.plain_bytes_out += produced;
             // NOTE: Tracking: https://github.com/trifectatechfoundation/zlib-rs/issues/439
             // this *does not* seem to be necessary any longer, but I'm keeping it here just for
@@ -319,10 +318,17 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
                 trace!("HERE");
             }
             // FIXME: Do something with the record counting.
+            let first_record_offset;
             (num_records, first_record_offset) = record_counter.push_bytes(
                 &state.output_ringbuf
                     [OUTPUT_BUF_SIZE - before as usize..OUTPUT_BUF_SIZE - after as usize],
             );
+            if let Some(last) = index.record_boundaries.last_mut() {
+                if last.next_record_pos == u64::MAX && let Some(fr) = first_record_offset {
+                    last.next_record_pos = fr as u64;
+                    trace!("Updated next_record_pos={}", fr);
+                }
+            }
         }
 
         // Check if we should add an access point
@@ -347,13 +353,19 @@ fn deflate_index_build<R: Read>(reader: &mut R, chunk_size: i64) -> Result<MimIn
                 "Added checkpoint at totin={}, totout={}, checkpoint={}",
                 in_offset, state.plain_bytes_out, index.num_checkpoints
             );
-            // index.record_boundaries.push(RecordCheckpoint {
-            //     first_record_in_chunk: num_records as u64,
-            //     byte_offset: first_record_offset.unwrap_or(state.totout as u64),
-            // });
+            trace!("Num records in this chunk: {}", num_records);
+            index.record_boundaries.push(RecordCheckpoint {
+                next_record_idx: num_records as u64,
+                next_record_pos: u64::MAX,
+            });
             state.last_checkpoint_pos = state.plain_bytes_out;
         }
     }
+
+    index.record_boundaries.push(RecordCheckpoint {
+        next_record_idx: num_records as u64,
+        next_record_pos: index.plain_size as u64,
+    });
 
     unsafe { zlib::inflateEnd(&mut state.strm) };
 
@@ -412,81 +424,9 @@ pub fn build_index(
     // Process FASTQ records
     trace!("Getting record boundaries from FASTQ file");
 
-    let mut record_count = 0u64;
-
-    if index.num_checkpoints == 0 {
-        info!("no access points created");
-        index.record_boundaries.push(RecordCheckpoint {
-            first_record_in_chunk: 0,
-            byte_offset: 0,
-        });
-
-        // Parse FASTQ file to count records
-        // TODO: Count at the same time as building the index.
-        let mut reader = parse_fastx_file(gzip_file)
-            .map_err(|e| IndexError::Compression(format!("Failed to parse FASTQ: {}", e)))?;
-
-        while let Some(record) = reader.next() {
-            record.map_err(|e| IndexError::Compression(format!("FASTQ parse error: {}", e)))?;
-            record_count += 1;
-        }
-
-        index.record_boundaries.push(RecordCheckpoint {
-            first_record_in_chunk: record_count,
-            byte_offset: index.plain_size as u64,
-        });
-        index.num_record_chunks = 1;
-    } else {
-        let mut current_access_index = 0;
-        let mut next_decomp_checkpoint = index.checkpoints[current_access_index].plain_pos;
-
-        // Parse FASTQ and align with access points
-        let mut reader = parse_fastx_file(gzip_file)
-            .map_err(|e| IndexError::Compression(format!("Failed to parse FASTQ: {}", e)))?;
-
-        while let Some(record_result) = reader.next() {
-            let record = record_result
-                .map_err(|e| IndexError::Compression(format!("FASTQ parse error: {}", e)))?;
-
-            // Get the byte offset where this record starts in the uncompressed stream
-            let record_start = record.position().byte() as i64; //reader.position().byte() as i64;
-
-            // Check if we've passed a checkpoint
-            if record_start >= next_decomp_checkpoint
-                && current_access_index < index.num_checkpoints as usize
-            {
-                if index.record_boundaries.len() % 100 == 0 {
-                    trace!(
-                        "matched checkpoint {} with record starting at {} (record num {})",
-                        next_decomp_checkpoint,
-                        record_start,
-                        record_count
-                    );
-                }
-
-                index.record_boundaries.push(RecordCheckpoint {
-                    first_record_in_chunk: record_count,
-                    byte_offset: record_start as u64,
-                });
-
-                current_access_index += 1;
-                if current_access_index < index.num_checkpoints as usize {
-                    next_decomp_checkpoint = index.checkpoints[current_access_index].plain_pos;
-                }
-            }
-
-            record_count += 1;
-        }
-
-        index.record_boundaries.push(RecordCheckpoint {
-            first_record_in_chunk: record_count,
-            byte_offset: index.plain_size as u64,
-        });
-        index.num_record_chunks = index.record_boundaries.len() as i64;
-    }
-
-    index.total_num_records = record_count as i64;
-    info!("Got {} records from FASTQ file.", record_count);
+    index.num_record_chunks = index.record_boundaries.len() as i64 - 1;
+    index.total_num_records = index.record_boundaries.last().unwrap().next_record_idx as _;
+    info!("Got {} records from FASTQ file.", index.total_num_records);
 
     // Save index
     let output_path = match output_file {
