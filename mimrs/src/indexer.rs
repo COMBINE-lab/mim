@@ -347,7 +347,7 @@ fn deflate_index_build<R: BufRead>(
 
     index.record_boundaries.push(RecordCheckpoint {
         next_record_idx: num_records as u64,
-        next_record_pos: index.plain_size as u64,
+        next_record_pos: state.out_pos as u64,
     });
 
     // FIXME: We probably have a memory leak now when this is not called on early aborts.

@@ -41,7 +41,7 @@ impl RecordCounter {
         let mut first_record_offset = None;
 
         if data.is_empty() {
-            return (0, None);
+            return (self.records_started, first_record_offset);
         }
 
         if self.tp == Type::Unknown {
