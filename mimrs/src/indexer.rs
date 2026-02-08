@@ -229,12 +229,7 @@ fn deflate_index_build<R: BufRead>(
         // At the start, set the decompression mode.
         // FIXME: Can the mode change between gzip members?
         if state.mode == DecompressionMode::NONE {
-            state.mode = match input_buf[0] {
-                b if b & 0x0f == 8 => DecompressionMode::ZLIB,
-                // gzip starts with 1F8B
-                0x1f => DecompressionMode::GZIP,
-                _ => DecompressionMode::RAW,
-            };
+            state.mode = detect_mode(input_buf);
 
             unsafe {
                 check_error(libz_rs_sys::inflateInit2_(
@@ -391,6 +386,15 @@ fn deflate_index_build<R: BufRead>(
     index.plain_size = state.out_pos;
 
     Ok(index)
+}
+
+pub(crate) fn detect_mode(input_buf: &[u8]) -> DecompressionMode {
+    match input_buf[0] {
+        b if b & 0x0f == 8 => DecompressionMode::ZLIB,
+        // gzip starts with 1F8B
+        0x1f => DecompressionMode::GZIP,
+        _ => DecompressionMode::RAW,
+    }
 }
 
 fn check_error(ret: i32) -> Result<(), IndexError> {
