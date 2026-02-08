@@ -33,10 +33,10 @@ pub struct DeflateCheckPoint {
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct RecordCheckpoint {
     /// The 0-based index of the first record starting at or after this checkpoint.
-    pub first_record_in_chunk: u64,
-    /// The offset in the uncompressed data of this chunk where the first contained record starts.
+    pub next_record_idx: u64,
+    /// The offset in the full uncompressed data where the first record in this chunk starts.
     /// TODO: The first incomplete byte is always skipped.
-    pub byte_offset: u64,
+    pub next_record_pos: u64,
 }
 
 #[derive(Default, bincode::Encode, bincode::Decode, PartialEq, Eq, Clone, Copy)]

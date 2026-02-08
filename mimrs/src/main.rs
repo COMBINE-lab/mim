@@ -292,7 +292,7 @@ fn peek(args: &PeekCommand) -> anyhow::Result<()> {
     let mut gzfq = GzipStreamReader::open_at_checkpoint(&args.fastq_path, &index, args.checkpoint)
         .expect("valid gzip stream reader");
 
-    let record_offset = index.record_boundaries[args.checkpoint].byte_offset;
+    let record_offset = index.record_boundaries[args.checkpoint].next_record_pos;
     if record_offset > gzfq.uncompressed_offset() {
         // discard the requisite number of bytes
         let mut discard_buf = vec![0_u8; (record_offset - gzfq.uncompressed_offset()) as usize];

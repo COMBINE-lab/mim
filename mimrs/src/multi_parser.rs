@@ -113,8 +113,8 @@ fn get_worker_stream_helper(
     let chunk_range = chunk_assignments[worker_id].clone();
     let mut gzfq = GzipStreamReader::open_at_checkpoint(fpath, index, chunk_range.start)?;
 
-    let first_record_rank = index.record_boundaries[chunk_range.start].first_record_in_chunk;
-    let record_offset = index.record_boundaries[chunk_range.start].byte_offset;
+    let first_record_rank = index.record_boundaries[chunk_range.start].next_record_idx;
+    let record_offset = index.record_boundaries[chunk_range.start].next_record_pos;
     if record_offset > gzfq.uncompressed_offset() {
         // discard the requisite number of bytes
         let mut discard_buf = vec![0_u8; (record_offset - gzfq.uncompressed_offset()) as usize];
@@ -127,8 +127,8 @@ fn get_worker_stream_helper(
             index.plain_size as u64 - record_offset,
         )
     } else {
-        let last_record_rank = index.record_boundaries[chunk_range.end].first_record_in_chunk;
-        let last_record_offset = index.record_boundaries[chunk_range.end].byte_offset;
+        let last_record_rank = index.record_boundaries[chunk_range.end].next_record_idx;
+        let last_record_offset = index.record_boundaries[chunk_range.end].next_record_pos;
         (
             last_record_rank - first_record_rank,
             last_record_offset - record_offset,
@@ -293,15 +293,15 @@ impl MultiPairParser {
             // find the chunk we jump to in file 2
             let mut second_file_chunk = self.indexes[1]
                 .record_boundaries
-                .partition_point(|x| x.first_record_in_chunk < first_record_rank);
-            if self.indexes[1].record_boundaries[second_file_chunk].first_record_in_chunk
+                .partition_point(|x| x.next_record_idx < first_record_rank);
+            if self.indexes[1].record_boundaries[second_file_chunk].next_record_idx
                 > first_record_rank
             {
                 second_file_chunk = 0_i64.max(second_file_chunk as i64 - 1) as usize;
             }
             // and the record rank starting this chunk
             let second_record_rank =
-                self.indexes[1].record_boundaries[second_file_chunk].first_record_in_chunk;
+                self.indexes[1].record_boundaries[second_file_chunk].next_record_idx;
 
             let mut gzfq2 = GzipStreamReader::open_at_checkpoint(
                 &self.fpaths[1],
@@ -309,7 +309,8 @@ impl MultiPairParser {
                 second_file_chunk,
             )?;
             // skip the byte sup to the first record
-            let record_offset = self.indexes[1].record_boundaries[second_file_chunk].byte_offset;
+            let record_offset =
+                self.indexes[1].record_boundaries[second_file_chunk].next_record_pos;
             if record_offset > gzfq2.uncompressed_offset() {
                 // discard the requisite number of bytes
                 let mut discard_buf =
