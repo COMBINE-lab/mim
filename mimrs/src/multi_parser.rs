@@ -216,9 +216,7 @@ impl MultiParser {
     ) -> Result<Box<dyn FastxReader + 'a>, ParseError> {
         let (nbytes, byte_limited_stream) = self
             .get_worker_stream_by_bytes(worker_id)
-            .unwrap_or_else(|_| {
-                panic!("could not get byte-limited stream for workder {worker_id}")
-            });
+            .expect("could not get byte-limited stream");
         trace!("Worker {worker_id} will yield {nbytes} total uncompressed bytes");
         needletail::parse_fastx_reader(byte_limited_stream)
     }
