@@ -87,15 +87,15 @@ impl std::error::Error for IndexError {}
 /// Add an access point to the index
 fn add_point(
     index: &mut MimIndex,
-    gz_pos: i64,
-    plain_pos: i64,
+    in_pos: i64,
+    out_pos: i64,
     gzip_member_start_pos: i64,
     output_ringbuf: &[u8; OUTPUT_BUF_SIZE],
     strm: &libz_rs_sys::z_stream,
     chunk_size: i64,
 ) -> Result<(), IndexError> {
     // Context window does not go before the start of the gzip member.
-    let window_size = (plain_pos - gzip_member_start_pos).min(WINSIZE as i64) as usize;
+    let window_size = (out_pos - gzip_member_start_pos).min(WINSIZE as i64) as usize;
 
     let mut window = vec![0u8; window_size];
     {
@@ -115,8 +115,8 @@ fn add_point(
     let bits = (strm.data_type & 7) as u8;
 
     index.checkpoints.push(DeflateCheckPoint {
-        plain_pos,
-        gz_pos,
+        out_pos,
+        in_pos,
         bits,
         window_size: window_size as u32,
         window,
@@ -127,11 +127,11 @@ fn add_point(
     trace!(
         "adding access point {} at {} (read) {} (written); distance {} vs chunk size {}  | window {window_size}",
         index.num_checkpoints,
-        gz_pos,
-        plain_pos,
-        plain_pos
+        in_pos,
+        out_pos,
+        out_pos
             - (if index.num_checkpoints > 1 {
-                index.checkpoints[index.num_checkpoints as usize - 2].plain_pos
+                index.checkpoints[index.num_checkpoints as usize - 2].out_pos
             } else {
                 0
             }),

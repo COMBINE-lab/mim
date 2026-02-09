@@ -17,12 +17,12 @@ pub(crate) type Blake3Hash = [u8; 32];
 /// the exact (byte and bit) offset in the decompressed file that this checkpoints corresponds to.
 #[derive(Clone, bincode::Encode, bincode::Decode)]
 pub struct DeflateCheckPoint {
-    /// Byte offset in the decompressed data where this chunk starts.
-    pub plain_pos: i64,
     /// Byte offset in the compressed file where this chunk starts.
-    pub gz_pos: i64,
+    pub in_pos: i64,
     /// Number of spare bits in the compressed stream.
     pub bits: u8,
+    /// Byte offset in the decompressed data where this chunk starts.
+    pub out_pos: i64,
     /// Number of bytes in the window that are used as context for LZ.
     pub window_size: u32,
     /// The preceding 32KiB (or less) window for deflate state.

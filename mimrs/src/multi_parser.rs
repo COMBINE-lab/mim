@@ -116,9 +116,9 @@ fn get_worker_stream_helper(
 
     let first_record_rank = index.record_boundaries[chunk_range.start].next_record_idx;
     let record_offset = index.record_boundaries[chunk_range.start].next_record_pos;
-    if record_offset > gzfq.uncompressed_offset() {
+    if record_offset > gzfq.out_pos() {
         // discard the requisite number of bytes
-        let mut discard_buf = vec![0_u8; (record_offset - gzfq.uncompressed_offset()) as usize];
+        let mut discard_buf = vec![0_u8; (record_offset - gzfq.out_pos()) as usize];
         gzfq.read_exact(&mut discard_buf)?;
     }
 
@@ -312,10 +312,9 @@ impl MultiPairParser {
             // skip the byte sup to the first record
             let record_offset =
                 self.indexes[1].record_boundaries[second_file_chunk].next_record_pos;
-            if record_offset > gzfq2.uncompressed_offset() {
+            if record_offset > gzfq2.out_pos() {
                 // discard the requisite number of bytes
-                let mut discard_buf =
-                    vec![0_u8; (record_offset - gzfq2.uncompressed_offset()) as usize];
+                let mut discard_buf = vec![0_u8; (record_offset - gzfq2.out_pos()) as usize];
                 gzfq2.read_exact(&mut discard_buf)?;
             }
 
