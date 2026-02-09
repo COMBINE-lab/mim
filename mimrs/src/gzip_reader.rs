@@ -129,7 +129,7 @@ impl ZStreamWrapper {
 unsafe impl Send for ZStreamWrapper {}
 impl Drop for ZStreamWrapper {
     fn drop(&mut self) {
-        self.end();
+        let _ = self.end();
     }
 }
 

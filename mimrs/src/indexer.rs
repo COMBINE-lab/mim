@@ -128,7 +128,7 @@ fn add_checkpoint(
 
 struct DecompressionState {
     zstrm: ZStreamWrapper,
-    mode: DecompressionMode,
+    file_mode: DecompressionMode,
 
     /// Ringbuffer for decompression.
     output_ringbuf: [u8; OUTPUT_BUF_SIZE],
@@ -149,7 +149,7 @@ impl DecompressionState {
             zstrm: ZStreamWrapper::new(),
             in_pos: 0,
             out_pos: 0,
-            mode: DecompressionMode::NONE,
+            file_mode: DecompressionMode::NONE,
             last_checkpoint_pos: 0,
             output_ringbuf: [0u8; OUTPUT_BUF_SIZE],
             gzip_member_start: 0,
@@ -160,10 +160,10 @@ impl DecompressionState {
 /// Handle the boundary between concatenated gzip members.
 ///
 /// Must only be called if there is more data available.
-fn handle_gzip_member_boundary(state: &mut DecompressionState, ret: i32) -> Result<(), IndexError> {
+fn handle_gzip_member_boundary(state: &mut DecompressionState) -> Result<(), IndexError> {
     // Blocked GZIP is a thing, but blocked ZLIB and blocked DEFLATE are not.
     // (DEFLATE is only a single stream.)
-    if ret == libz_rs_sys::Z_STREAM_END && state.mode == DecompressionMode::GZIP {
+    if state.file_mode == DecompressionMode::GZIP {
         trace!(
             "Z_STREAM_END detected: avail_in={}, beg={}, totout={}",
             state.zstrm.strm.avail_in, state.gzip_member_start, state.out_pos
@@ -189,8 +189,6 @@ fn deflate_index_build<R: BufRead>(
 
     let mut record_counter = record_counter::RecordCounter::new();
 
-    let mut ret: i32 = libz_rs_sys::Z_OK;
-
     let mut num_records = 0;
 
     // Loop over the input
@@ -202,15 +200,15 @@ fn deflate_index_build<R: BufRead>(
 
         // At the start, set the decompression mode.
         // FIXME: Can the mode change between gzip members?
-        if state.mode == DecompressionMode::NONE {
+        if state.file_mode == DecompressionMode::NONE {
             // Detect file mode based on the first magic bytes.
-            state.mode = match input_buf[0] {
+            state.file_mode = match input_buf[0] {
                 b if b & 0x0f == 8 => DecompressionMode::ZLIB,
                 // gzip starts with 1F8B
                 0x1f => DecompressionMode::GZIP,
                 _ => DecompressionMode::RAW,
             };
-            state.zstrm.init(state.mode)?;
+            state.zstrm.init(state.file_mode)?;
         }
 
         // Hash the gzip file itself.
@@ -219,25 +217,27 @@ fn deflate_index_build<R: BufRead>(
         // Process the input buffer.
         while state.zstrm.strm.avail_in > 0 {
             // In RAW mode, force a checkpoint at the start.
-            if state.mode == DecompressionMode::RAW && index.checkpoints.is_empty() {
+            if state.file_mode == DecompressionMode::RAW && index.checkpoints.is_empty() {
                 state.zstrm.strm.data_type = 0x80;
             } else {
-                // If the last loop reached end-of-stream and there is more data, start a new member.
-                // FIXME: Does `reset_inflate` touch `avail_in`?
-                // TODO: Move back to end of the loop?
-                handle_gzip_member_boundary(&mut state, ret)?;
-
-                // Wrap around the ring buffer.
+                // Wrap around the output ring buffer.
                 if state.zstrm.strm.avail_out == 0 {
                     state.zstrm.strm.avail_out = OUTPUT_BUF_SIZE as u32;
                     state.zstrm.strm.next_out = state.output_ringbuf.as_mut_ptr();
                 }
 
-                let (is_stream_end, consumed, produced) =
+                let (at_deflate_stream_end, consumed, produced) =
                     state.zstrm.inflate(libz_rs_sys::Z_BLOCK)?;
 
+                if at_deflate_stream_end {
+                    // If the last loop reached end-of-stream and there is more data, start a new member.
+                    // FIXME: Does `reset_inflate` touch `avail_in`?
+                    // TODO: Move back to end of the loop?
+                    handle_gzip_member_boundary(&mut state)?;
+                }
+
                 trace!(
-                    "STATE: {:>16b} ret {ret} consumed {}  produced {}",
+                    "STATE: {:>16b} consumed {}  produced {}",
                     state.zstrm.strm.data_type, consumed, produced
                 );
 
@@ -350,7 +350,7 @@ fn deflate_index_build<R: BufRead>(
     }
     info!("{}", str::from_utf8(&msg).expect("valid utf8"));
 
-    index.mode = state.mode;
+    index.mode = state.file_mode;
     index.plain_size = state.out_pos;
 
     Ok(index)
