@@ -3,7 +3,7 @@ use lender::prelude::*;
 use mim::gzip_reader::GzipStreamReader;
 use mim::indexer;
 use mim::mim_types::MimIndex;
-use mim::multi_parser::{MultiPairParser, MultiParser, ReadIter};
+use mim::multi_parser::{MimParser, MultiPairParser, ReadIter};
 use std::io;
 use std::sync::Arc;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
@@ -161,7 +161,7 @@ fn launch_paired_parser(args: &NucHistCommand) -> anyhow::Result<()> {
 }
 
 fn launch_single_parser(args: &NucHistCommand) -> anyhow::Result<()> {
-    let mp = Arc::new(MultiParser::new_with_workers(
+    let mp = Arc::new(MimParser::new(
         &args.fastq_paths[0],
         &args.index_paths.as_deref().expect("valid at this point")[0],
         args.nthreads,
@@ -174,9 +174,7 @@ fn launch_single_parser(args: &NucHistCommand) -> anyhow::Result<()> {
     for t in 0..args.nthreads {
         let mp = mp.clone();
         threads.push(std::thread::spawn(move || {
-            let mut wi = mp
-                .get_needletail_parser_for_worker(t)
-                .expect("can get worker");
+            let mut wi = mp.get_worker_needletail_reader(t).expect("can get worker");
             let mut nucs = vec![0_usize; 4];
             while let Some(rec) = wi.next() {
                 let record = rec.expect("valid record");
@@ -289,8 +287,9 @@ fn peek(args: &PeekCommand) -> anyhow::Result<()> {
     );
 
     eprintln!("opening at checkpoint: {}", args.checkpoint);
-    let mut gzfq = GzipStreamReader::open_at_checkpoint(&args.fastq_path, &index, args.checkpoint)
-        .expect("valid gzip stream reader");
+    let mut gzfq =
+        GzipStreamReader::read_from_checkpoint(&args.fastq_path, &index, args.checkpoint)
+            .expect("valid gzip stream reader");
 
     let record_offset = index.record_boundaries[args.checkpoint].next_record_pos;
     if record_offset > gzfq.out_pos() {

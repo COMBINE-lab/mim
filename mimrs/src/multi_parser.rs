@@ -30,12 +30,17 @@ impl<'this> Lender for ReadIter<'this> {
     }
 }
 
-pub struct MultiParser {
-    pub nworker: usize,
-    pub fpath: PathBuf,
-    pub ipath: PathBuf,
-    pub chunk_assignments: Vec<Range<usize>>,
+/// Type managing multithreaded parsing of a .gz file with a .mim index.
+// TODO: Parser? Reader?
+pub struct MimParser {
+    /// .gz input file.
+    pub input_path: PathBuf,
+    /// The index itself.
     pub index: MimIndex,
+    /// The number of worker threads.
+    pub nworker: usize,
+    /// The range of chunks assigned to each worker.
+    pub chunk_assignments: Vec<Range<usize>>,
 }
 
 pub struct MultiPairParser {
@@ -47,22 +52,19 @@ pub struct MultiPairParser {
     pub indexes: Vec<MimIndex>,
 }
 
-impl MultiParser {
-    pub fn new_with_workers(fpath: &Path, ipath: &Path, nworker: usize) -> Self {
-        let index = MimIndex::read(ipath).expect("failed to load index");
-
-        let chunk_assignments = index.distribute_chunks(nworker);
-
+impl MimParser {
+    /// Create a `MimParser` for the given `.gz` file, `.gz.mim` files, and number of worker threads.
+    pub fn new(gz_path: &Path, index_path: &Path, nworker: usize) -> Self {
+        let index = MimIndex::read(index_path).expect("failed to load index");
         Self {
             nworker,
-            fpath: PathBuf::from(fpath),
-            ipath: PathBuf::from(ipath),
-            chunk_assignments,
+            input_path: gz_path.to_owned(),
+            chunk_assignments: index.distribute_chunks(nworker),
             index,
         }
     }
 
-    /// Returns a reader that returns exactly the chunk for the given worker.
+    /// A reader of the record-aligned byte range of this worker.
     pub fn get_worker_stream(&self, worker_id: usize) -> Result<GzipStreamReader> {
         if worker_id >= self.nworker {
             anyhow::bail!(
@@ -72,25 +74,29 @@ impl MultiParser {
             )
         }
 
-        let gzfq = GzipStreamReader::open_for_checkpoint_range(
-            &self.fpath,
+        Ok(GzipStreamReader::read_range(
+            &self.input_path,
             &self.index,
             (&self.chunk_assignments)[worker_id].clone(),
-        )?;
-        Ok(gzfq)
+        )?)
     }
 
-    pub fn get_needletail_parser_for_worker<'a>(
+    /// A [`needletail::FastxReader`] over the records of this worker.
+    ///
+    /// Convenience wrapper around [`Self::get_worker_stream`].
+    pub fn get_worker_needletail_reader<'a>(
         &'a self,
         worker_id: usize,
     ) -> Result<Box<dyn FastxReader + 'a>, ParseError> {
-        let byte_limited_stream = self
-            .get_worker_stream(worker_id)
-            .expect("could not get byte-limited stream");
-        // trace!("Worker {worker_id} will yield {nbytes} total uncompressed bytes");
-        needletail::parse_fastx_reader(byte_limited_stream)
+        needletail::parse_fastx_reader(
+            self.get_worker_stream(worker_id)
+                .expect("could not get byte-limited stream"),
+        )
     }
 
+    /// An iterator over the [`needletail::SequenceRecord`] records records of this worker.
+    ///
+    /// Convenience wrapper around [`Self::get_worker_stream`] and [`Self::get_worker_needletail_reader`].
     pub fn get_worker_iter<'a>(&'a self, worker_id: usize) -> Result<ReadIter<'a>> {
         let stream = self.get_worker_stream(worker_id)?;
         let fastx_reader = needletail::parse_fastx_reader(stream).expect("invalid reader");
@@ -142,7 +148,7 @@ impl MultiPairParser {
         worker_id: usize,
     ) -> anyhow::Result<(Box<dyn FastxReader + 'a>, Box<dyn FastxReader + 'a>)> {
         if worker_id < self.nworker {
-            let gzfq = GzipStreamReader::open_for_checkpoint_range(
+            let gzfq = GzipStreamReader::read_range(
                 &self.fpaths[0],
                 &self.indexes[0],
                 (&self.chunk_assignments)[worker_id].clone(),
@@ -162,7 +168,7 @@ impl MultiPairParser {
             let second_record_rank =
                 self.indexes[1].record_boundaries[second_file_chunk].next_record_idx;
 
-            let mut gzfq2 = GzipStreamReader::open_at_checkpoint(
+            let mut gzfq2 = GzipStreamReader::read_from_checkpoint(
                 &self.fpaths[1],
                 &self.indexes[1],
                 second_file_chunk,

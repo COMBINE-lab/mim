@@ -171,15 +171,15 @@ impl GzipStreamReader {
     }
 
     /// Open a gzip file at a specific checkpoint
-    pub fn open_at_checkpoint(
+    pub fn read_from_checkpoint(
         gz_file_path: &Path,
         index: &MimIndex,
         checkpoint: usize,
     ) -> io::Result<Self> {
-        Self::open_for_checkpoint_range(gz_file_path, index, checkpoint..index.checkpoints.len())
+        Self::read_range(gz_file_path, index, checkpoint..index.checkpoints.len())
     }
     /// Open a gzip file at a specific checkpoint
-    pub fn open_for_checkpoint_range(
+    pub fn read_range(
         gz_file_path: &Path,
         index: &MimIndex,
         checkpoint_range: Range<usize>,

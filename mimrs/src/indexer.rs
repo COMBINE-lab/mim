@@ -10,7 +10,6 @@ use crate::record_counter;
 //use libz_ng_sys::{self as zlib, Z_OK};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
@@ -31,7 +30,7 @@ const WINSIZE: usize = 32 * 1024;
 /// This allows for backwards-compatible extensions.
 #[derive(Debug, Serialize, Deserialize)]
 struct IndexMetadata {
-    user_metadata: Option<JsonValue>,
+    user_metadata: Option<serde_json::Value>,
 }
 
 impl MimIndex {
@@ -360,7 +359,7 @@ fn deflate_index_build<R: BufRead>(
 pub fn build_index(
     gzip_file: &Path,
     chunk_size: i64,
-    user_metadata: Option<JsonValue>,
+    user_metadata: Option<serde_json::Value>,
     output_file: Option<&Path>,
 ) -> Result<(), IndexError> {
     trace!("Opening file: {:?}", gzip_file);

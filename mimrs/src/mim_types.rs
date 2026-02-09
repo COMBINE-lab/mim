@@ -95,6 +95,8 @@ impl MimIndex {
     /// Returns for each worker the range of checkpoints that it will process.
     ///
     /// This balances the number of fastx bytes per worker, rather than just the number of records.
+    // TODO: This could possibly be optimized slightly by minimizing the length of the maximum chunk.
+    //       Or, we could take into account the length of the decompressed data as well.
     pub fn distribute_chunks(&self, num_workers: usize) -> Vec<Range<usize>> {
         let total_bytes = self.plain_size as usize;
         let target_size = total_bytes.div_ceil(num_workers);
