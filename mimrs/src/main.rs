@@ -4,10 +4,11 @@ use mim::gzip_reader::GzipStreamReader;
 use mim::indexer;
 use mim::mim_types::MimIndex;
 use mim::multi_parser::{MimParser, MultiPairParser, ReadIter};
+use std::os::unix::fs::FileExt;
 use std::sync::Arc;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::path::PathBuf;
 use std::thread::JoinHandle;
 
@@ -74,7 +75,7 @@ struct UnzipCommand {
     pub parts: Option<usize>,
 
     /// Number of threads to use. Defaults to number of cores.
-    #[arg(short = 'j', long)]
+    #[arg(short = 'j', long, conflicts_with = "parts")]
     pub threads: Option<usize>,
 }
 
@@ -319,26 +320,58 @@ fn peek(args: &PeekCommand) -> anyhow::Result<()> {
 }
 
 fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
-    // let threads = args.threads.unwrap_or_else(|| num_cpus::get());
-    let parts = args.parts.unwrap_or(1);
-    let mim_parser = MimParser::new(&args.gz_path, args.index_path.as_deref(), parts);
-    let readers = mim_parser.get_readers();
+    if let Some(parts) = args.parts {
+        // One thread per output part.
+        let mim_parser = MimParser::new(&args.gz_path, args.index_path.as_deref(), parts);
+        let readers = mim_parser.get_readers();
 
-    let output = args
-        .output
-        .clone()
-        .unwrap_or_else(|| args.gz_path.with_extension(""));
+        let output = args
+            .output
+            .clone()
+            .unwrap_or_else(|| args.gz_path.with_extension(""));
 
-    std::thread::scope(|s| {
-        for (i, reader) in readers.enumerate() {
-            let output = output.with_added_extension(format!("{i}"));
-            s.spawn(move || {
-                let mut writer = std::fs::File::create(output).expect("could not create output");
-                std::io::copy(&mut reader.expect("valid reader"), &mut writer)
-                    .expect("failed to write output");
-            });
-        }
-    });
+        std::thread::scope(|s| {
+            for (i, reader) in readers.enumerate() {
+                let output = output.with_added_extension(format!("{i}"));
+                s.spawn(move || {
+                    let mut writer =
+                        std::fs::File::create(output).expect("could not create output");
+                    std::io::copy(&mut reader.expect("valid reader"), &mut writer)
+                        .expect("failed to write output");
+                });
+            }
+        });
+    } else {
+        // Single output file; all threads cooperate.
+        let threads = args.threads.unwrap_or_else(|| num_cpus::get());
+        let mim_parser = MimParser::new(&args.gz_path, args.index_path.as_deref(), threads);
+        let readers = mim_parser.get_readers();
+
+        let output = args
+            .output
+            .clone()
+            .unwrap_or_else(|| args.gz_path.with_extension(""));
+        let file = &std::fs::File::create(&output).expect("could not create output");
+
+        std::thread::scope(|s| {
+            for (i, reader) in readers.enumerate() {
+                s.spawn(move || -> anyhow::Result<()> {
+                    let reader = reader.expect("valid reader");
+                    let mut pos = reader.output_range().start;
+                    let mut bufreader = std::io::BufReader::with_capacity(256 * 1024, reader);
+                    while let buf = bufreader.fill_buf()?
+                        && !buf.is_empty()
+                    {
+                        file.write_all_at(buf, pos)?;
+                        let len = buf.len();
+                        pos += len as u64;
+                        bufreader.consume(len);
+                    }
+                    Ok(())
+                });
+            }
+        });
+    }
     Ok(())
 }
 
