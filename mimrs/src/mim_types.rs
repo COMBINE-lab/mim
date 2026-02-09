@@ -2,6 +2,7 @@
 use std::{
     fs::File,
     io::{Error, ErrorKind, Read, Result},
+    ops::Range,
     path::Path,
 };
 
@@ -70,22 +71,46 @@ pub struct MimIndex {
     pub record_boundaries: Vec<RecordCheckpoint>,
 }
 
-/// Decompress and then deserialize a .mim file.
-pub fn read_mim_index(path: &Path) -> Result<MimIndex> {
-    let reader = File::open(path)?;
-    let buf_reader = std::io::BufReader::with_capacity(256 * 1024, reader);
-    let mut gz_reader = flate2::bufread::GzDecoder::new(buf_reader);
-    {
-        // Check file constant.
-        let mut file_signature = [0; 8];
-        gz_reader.read_exact(&mut file_signature)?;
-        if file_signature != *MIMINDEX_FILE_CONSTANT {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "File signature does not match MIMINDEX constant.",
-            ));
+impl MimIndex {
+    /// Decompress and then deserialize a .mim file.
+    pub fn read(path: &Path) -> Result<MimIndex> {
+        let reader = File::open(path)?;
+        let buf_reader = std::io::BufReader::with_capacity(256 * 1024, reader);
+        let mut gz_reader = flate2::bufread::GzDecoder::new(buf_reader);
+        {
+            // Check file constant.
+            let mut file_signature = [0; 8];
+            gz_reader.read_exact(&mut file_signature)?;
+            if file_signature != *MIMINDEX_FILE_CONSTANT {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "File signature does not match MIMINDEX constant.",
+                ));
+            }
         }
+        bincode::decode_from_std_read(&mut gz_reader, bincode::config::legacy())
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e))
     }
-    bincode::decode_from_std_read(&mut gz_reader, bincode::config::legacy())
-        .map_err(|e| Error::new(ErrorKind::InvalidData, e))
+
+    /// Returns for each worker the range of checkpoints that it will process.
+    ///
+    /// This balances the number of fastx bytes per worker, rather than just the number of records.
+    pub fn distribute_chunks(&self, num_workers: usize) -> Vec<Range<usize>> {
+        let total_bytes = self.plain_size as usize;
+        let target_size = total_bytes.div_ceil(num_workers);
+        // For each worker, take the first chunk where it overshoots the target bytes.
+        let mut ranges = Vec::with_capacity(num_workers);
+        let mut i = 0;
+        for worker_id in 0..num_workers {
+            let target_end = target_size * (worker_id + 1);
+            let start = i;
+            while i < self.checkpoints.len()
+                && self.record_boundaries[i].next_record_pos < target_end as u64
+            {
+                i += 1;
+            }
+            ranges.push(start..i);
+        }
+        ranges
+    }
 }

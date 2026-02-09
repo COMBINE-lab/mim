@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand};
 use lender::prelude::*;
 use mim::gzip_reader::GzipStreamReader;
 use mim::indexer;
-use mim::mim_types::read_mim_index;
+use mim::mim_types::MimIndex;
 use mim::multi_parser::{MultiPairParser, MultiParser, ReadIter};
 use std::io;
 use std::sync::Arc;
@@ -260,7 +260,7 @@ fn build_index(args: &BuildCommand) -> anyhow::Result<()> {
 }
 
 fn inspect_index(args: &InfoCommand) -> anyhow::Result<()> {
-    let index = read_mim_index(&args.index_path)?;
+    let index = MimIndex::read(&args.index_path)?;
     let metadata_dict: serde_cbor::Value =
         serde_cbor::from_slice(&index.metadata).map_err(|e| {
             std::io::Error::new(
@@ -280,7 +280,7 @@ fn inspect_index(args: &InfoCommand) -> anyhow::Result<()> {
 }
 
 fn peek(args: &PeekCommand) -> anyhow::Result<()> {
-    let index = read_mim_index(&args.index_path).expect("failed to load index");
+    let index = MimIndex::read(&args.index_path).expect("failed to load index");
     assert!(
         args.checkpoint < index.checkpoints.len(),
         "requested checkpoint {} >= number of checkpoints {}",

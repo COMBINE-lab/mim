@@ -1,6 +1,6 @@
 //! FIXME: Split work by chunk-size, not just by chunk-count.
 use crate::gzip_reader::GzipStreamReader;
-use crate::mim_types::{MimIndex, read_mim_index};
+use crate::mim_types::MimIndex;
 use anyhow::Result;
 use lender::prelude::*;
 use needletail::errors::ParseError;
@@ -47,41 +47,11 @@ pub struct MultiPairParser {
     pub indexes: Vec<MimIndex>,
 }
 
-/// Distributes x chunks evenly across t threads.
-/// Returns a vector of ranges where each range represents the chunk indices
-/// assigned to a thread (start inclusive, end exclusive).
-fn distribute_chunks(x: usize, t: usize) -> Vec<Range<usize>> {
-    if t == 0 {
-        return vec![];
-    }
-
-    let chunks_per_thread = x / t;
-    let remainder = x % t;
-
-    let mut ranges = Vec::with_capacity(t);
-    let mut start = 0;
-
-    for i in 0..t {
-        // First 'remainder' threads get an extra chunk
-        let size = if i < remainder {
-            chunks_per_thread + 1
-        } else {
-            chunks_per_thread
-        };
-
-        let end = start + size;
-        ranges.push(start..end);
-        start = end;
-    }
-
-    ranges
-}
-
 impl MultiParser {
     pub fn new_with_workers(fpath: &Path, ipath: &Path, nworker: usize) -> Self {
-        let index = read_mim_index(ipath).expect("failed to load index");
+        let index = MimIndex::read(ipath).expect("failed to load index");
 
-        let chunk_assignments = distribute_chunks(index.checkpoints.len(), nworker);
+        let chunk_assignments = index.distribute_chunks(nworker);
 
         Self {
             nworker,
@@ -143,18 +113,14 @@ impl MultiPairParser {
 
         let indexes: Vec<MimIndex> = ipaths
             .iter()
-            .map(|path| read_mim_index(path.as_ref()).expect("failed to load index"))
+            .map(|path| MimIndex::read(path.as_ref()).expect("failed to load index"))
             .collect();
 
         // distribute chunks based on the first file
-        let chunk_assignments = distribute_chunks(
-            indexes
-                .first()
-                .expect("at least two indexes")
-                .checkpoints
-                .len(),
-            nworker,
-        );
+        let chunk_assignments = indexes
+            .first()
+            .expect("at least two indexes")
+            .distribute_chunks(nworker);
 
         Ok(Self {
             nworker,
