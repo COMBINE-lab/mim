@@ -4,8 +4,10 @@ use mim::gzip_reader::GzipStreamReader;
 use mim::indexer;
 use mim::mim_types::MimIndex;
 use mim::multi_parser::{MimParser, MultiPairParser, ReadIter};
+use std::ffi::CString;
 use std::os::unix::fs::FileExt;
 use std::sync::Arc;
+use tracing::debug;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 
 use std::io::{BufRead, Read};
@@ -77,6 +79,10 @@ struct UnzipCommand {
     /// Number of threads to use. Defaults to number of cores.
     #[arg(short = 'j', long, conflicts_with = "parts")]
     pub threads: Option<usize>,
+
+    /// Fork and create a named pipe instead of file for each part. Requires --parts.
+    #[arg(long, requires = "parts")]
+    pub pipe: bool,
 }
 
 #[derive(Args, Debug)]
@@ -330,17 +336,88 @@ fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
             .clone()
             .unwrap_or_else(|| args.gz_path.with_extension(""));
 
-        std::thread::scope(|s| {
-            for (i, reader) in readers.enumerate() {
-                let output = output.with_added_extension(format!("{i}"));
-                s.spawn(move || {
-                    let mut writer =
-                        std::fs::File::create(output).expect("could not create output");
-                    std::io::copy(&mut reader.expect("valid reader"), &mut writer)
-                        .expect("failed to write output");
+        match args.pipe {
+            false => {
+                // Write one part per thread.
+                std::thread::scope(|s| {
+                    for (i, reader) in readers.enumerate() {
+                        let output = output.with_added_extension(format!("{i}"));
+                        s.spawn(move || {
+                            let mut writer =
+                                std::fs::File::create(output).expect("could not create output");
+                            std::io::copy(&mut reader.expect("valid reader"), &mut writer)
+                                .expect("failed to write output");
+                        });
+                    }
                 });
             }
-        });
+            true => {
+                // Clean pipes on ctrl-c.
+                let output2 = output.clone();
+                ctrlc::set_handler(move || {
+                    eprintln!("Ctrl-C received. Deleting pipes and exiting.");
+                    for i in 0..parts {
+                        let pipe_path = output2.with_added_extension(format!("{i}"));
+                        if pipe_path.exists() {
+                            debug!("Deleting pipe: {:?}", pipe_path);
+                            std::fs::remove_file(pipe_path).expect("failed to delete pipe");
+                        }
+                    }
+                    debug!("Done. Exiting.");
+                    std::process::exit(0);
+                })
+                .expect("Error setting Ctrl-C handler");
+
+                // Fork one process per part.
+                std::thread::scope(|s| {
+                    for (i, reader) in readers.enumerate() {
+                        let output = output.with_added_extension(format!("{i}"));
+                        s.spawn(move || {
+                            debug!("{i}: started");
+                            // child process
+                            debug!("{i}: {output:?}");
+
+                            // Drop the output pipe, even on panics.
+                            struct DropPipe(usize, PathBuf);
+                            impl Drop for DropPipe {
+                                fn drop(&mut self) {
+                                    let i = self.0;
+                                    debug!("{i}: done. Deleting pipe.");
+                                    std::fs::remove_file(&self.1).expect("failed to delete pipe");
+                                    debug!("{i}: end of thread");
+                                }
+                            }
+                            let _drop = DropPipe(i, output.clone());
+
+                            let res = unsafe {
+                                libc::mkfifo(
+                                    CString::new(output.to_string_lossy().as_bytes())
+                                        .unwrap()
+                                        .as_ptr(),
+                                    0o644,
+                                )
+                            };
+                            if res != 0 {
+                                panic!(
+                                    "could not create named pipe: {}",
+                                    std::io::Error::last_os_error()
+                                );
+                            }
+
+                            debug!("{i}: opening file for writing..");
+                            // Things hangs until someone opens the pipe for reading.
+                            let mut writer =
+                                std::fs::File::create(&output).expect("could not create output");
+                            debug!("{i}: writing to pipe..");
+                            std::io::copy(&mut reader.expect("valid reader"), &mut writer)
+                                .expect("failed to write output");
+
+                            debug!("{i}: end of thread");
+                        });
+                    }
+                });
+            }
+        };
     } else {
         // Single output file; all threads cooperate.
         let threads = args.threads.unwrap_or_else(|| num_cpus::get());
@@ -354,7 +431,7 @@ fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
         let file = &std::fs::File::create(&output).expect("could not create output");
 
         std::thread::scope(|s| {
-            for (i, reader) in readers.enumerate() {
+            for reader in readers {
                 s.spawn(move || -> anyhow::Result<()> {
                     let reader = reader.expect("valid reader");
                     let mut pos = reader.output_range().start;
