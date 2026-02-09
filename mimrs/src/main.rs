@@ -2,8 +2,8 @@ use clap::{Args, Parser, Subcommand};
 use lender::prelude::*;
 use mim::gzip_reader::GzipStreamReader;
 use mim::indexer;
+use mim::mim_reader::{MimReader, MultiPairParser, ReadIter};
 use mim::mim_types::MimIndex;
-use mim::multi_parser::{MimParser, MultiPairParser, ReadIter};
 use std::ffi::CString;
 use std::os::unix::fs::FileExt;
 use std::sync::Arc;
@@ -175,9 +175,9 @@ fn launch_paired_parser(args: &NucHistCommand) -> anyhow::Result<()> {
 }
 
 fn launch_single_parser(args: &NucHistCommand) -> anyhow::Result<()> {
-    let mp = Arc::new(MimParser::new(
+    let mp = Arc::new(MimReader::new_with_index(
         &args.fastq_paths[0],
-        Some(&args.index_paths.as_deref().expect("valid at this point")[0]),
+        &args.index_paths.as_deref().expect("valid at this point")[0],
         args.nthreads,
     ));
 
@@ -188,7 +188,7 @@ fn launch_single_parser(args: &NucHistCommand) -> anyhow::Result<()> {
     for t in 0..args.nthreads {
         let mp = mp.clone();
         threads.push(std::thread::spawn(move || {
-            let mut wi = mp.get_worker_needletail_reader(t).expect("can get worker");
+            let mut wi = mp.get_needletail_reader(t).expect("can get worker");
             let mut nucs = vec![0_usize; 4];
             while let Some(rec) = wi.next() {
                 let record = rec.expect("valid record");
@@ -328,8 +328,9 @@ fn peek(args: &PeekCommand) -> anyhow::Result<()> {
 fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
     if let Some(parts) = args.parts {
         // One thread per output part.
-        let mim_parser = MimParser::new(&args.gz_path, args.index_path.as_deref(), parts);
-        let readers = mim_parser.get_readers();
+        let mim_parser =
+            MimReader::new_with_opt_index(&args.gz_path, args.index_path.as_deref(), parts);
+        let readers = mim_parser.readers();
 
         let output = args
             .output
@@ -421,8 +422,9 @@ fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
     } else {
         // Single output file; all threads cooperate.
         let threads = args.threads.unwrap_or_else(|| num_cpus::get());
-        let mim_parser = MimParser::new(&args.gz_path, args.index_path.as_deref(), threads);
-        let readers = mim_parser.get_readers();
+        let mim_parser =
+            MimReader::new_with_opt_index(&args.gz_path, args.index_path.as_deref(), threads);
+        let readers = mim_parser.readers();
 
         let output = args
             .output

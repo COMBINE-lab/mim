@@ -12,7 +12,6 @@ flate2 = { version = "1.1.5", features = ["zlib-rs"] }
 lender = "0.4.2"
 libc = { version = "0.2.177", features = ["use_std"] }
 libz-rs-sys = "0.5.3"
-needletail = "0.6.3"
 path-tools = "0.1.0"
 serde = { version = "1.0.228", features = ["derive"] }
 paraseq = "0.4.3"
@@ -26,5 +25,15 @@ memchr = "2.8.0"
 num_cpus = "1.17.0"
 ctrlc = "3.5.1"
 
+needletail = { version = "0.6.3", optional = true }
+
 [profile.release]
 debug = true
+
+[features]
+needletail = ["dep:needletail"]
+default = ["needletail"]
+
+[[bin]]
+name = "mim"
+required-features = ["needletail"]

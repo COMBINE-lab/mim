@@ -6,7 +6,7 @@ use std::{
 
 use crate::indexer::{IndexError, build_index};
 
-use super::multi_parser::MimParser;
+use super::mim_reader::MimReader;
 
 use paraseq::{
     fastx::{self, GenericReader},
@@ -15,15 +15,15 @@ use paraseq::{
 
 use paraseq::parallel::ProcessError;
 
-pub struct MimReader {
+pub struct ParallelMimReader {
     file: PathBuf,
     index: PathBuf,
 }
 
-impl MimReader {
+impl ParallelMimReader {
     /// Assume the mim index is simply at `<path>.mim`.
     pub fn new(path: &Path) -> Self {
-        MimReader {
+        ParallelMimReader {
             file: path.to_owned(),
             index: path.to_owned().with_added_extension("mim"),
         }
@@ -35,30 +35,30 @@ impl MimReader {
             build_index(path, 32_000_000, None, Some(&index))?;
         }
 
-        Ok(MimReader {
+        Ok(ParallelMimReader {
             file: path.to_owned(),
             index,
         })
     }
     pub fn new_with_index(path: &Path, index: &Path) -> Self {
-        MimReader {
+        ParallelMimReader {
             file: path.to_owned(),
             index: index.to_owned(),
         }
     }
 }
 
-impl ParallelReader for MimReader {
+impl ParallelReader for ParallelMimReader {
     type Rf<'a> = paraseq::fastx::RefRecord<'a>;
 
     fn process_parallel<T>(self, processor: &mut T, num_threads: usize) -> paraseq::Result<()>
     where
         T: for<'a> paraseq::prelude::ParallelProcessor<Self::Rf<'a>>,
     {
-        let multi_parser = MimParser::new(&self.file, Some(&self.index), num_threads);
+        let multi_parser = MimReader::new_with_index(&self.file, &self.index, num_threads);
         let mut readers: Vec<fastx::Reader<_>> = (0..num_threads)
             .map(|id| {
-                let stream = multi_parser.get_worker_stream(id).unwrap();
+                let stream = multi_parser.get_reader(id).unwrap();
                 fastx::Reader::new(stream).unwrap()
             })
             .collect();

@@ -2,37 +2,12 @@
 use crate::gzip_reader::GzipStreamReader;
 use crate::mim_types::MimIndex;
 use anyhow::Result;
-use lender::prelude::*;
-use needletail::errors::ParseError;
-use needletail::parser::{FastxReader, SequenceRecord};
-use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-pub struct ReadIter<'a> {
-    reader: Box<dyn FastxReader + 'a>,
-}
-
-impl<'a> ReadIter<'a> {
-    pub fn new(reader: Box<dyn FastxReader + 'a>) -> Self {
-        Self { reader }
-    }
-}
-
-impl<'this, 'lend> Lending<'lend> for ReadIter<'this> {
-    type Lend = Result<SequenceRecord<'lend>, ParseError>;
-}
-
-#[allow(clippy::should_implement_trait)]
-impl<'this> Lender for ReadIter<'this> {
-    fn next(&mut self) -> Option<Lend<'_, Self>> {
-        self.reader.next()
-    }
-}
-
 /// Type managing multithreaded parsing of a .gz file with a .mim index.
 // TODO: Parser? Reader?
-pub struct MimParser {
+pub struct MimReader {
     /// .gz input file.
     pub input_path: PathBuf,
     /// The index itself.
@@ -52,28 +27,43 @@ pub struct MultiPairParser {
     pub indexes: Vec<MimIndex>,
 }
 
-impl MimParser {
-    /// Create a `MimParser` for the given `.gz` file, `.gz.mim` files, and number of worker threads.
-    pub fn new(gz_path: &Path, index_path: Option<&Path>, nworker: usize) -> Self {
-        let index_path = index_path
-            .map(|p| p.to_owned())
-            .unwrap_or_else(|| gz_path.with_added_extension("mim"));
+impl MimReader {
+    /// Create a `MimReader` for the given `.gz` and associated `.gz.mim` file, and number of worker threads.
+    pub fn new(gz_path: &Path, num_workers: usize) -> Self {
+        Self::new_with_index(gz_path, &gz_path.with_added_extension("mim"), num_workers)
+    }
+
+    /// Create a `MimReader` for the given `.gz` and optional `.mim` file, and number of worker threads.
+    pub fn new_with_opt_index(
+        gz_path: &Path,
+        index_path: Option<&Path>,
+        num_workers: usize,
+    ) -> Self {
+        let index_path = match index_path {
+            Some(p) => p.to_owned(),
+            None => gz_path.with_added_extension("mim"),
+        };
+        Self::new_with_index(gz_path, &index_path, num_workers)
+    }
+
+    /// Create a `MimReader` for the given `.gz` and `.mim` files, and number of worker threads.
+    pub fn new_with_index(gz_path: &Path, index_path: &Path, num_workers: usize) -> Self {
         let index = MimIndex::read(&index_path).expect("failed to load index");
         Self {
-            nworker,
+            nworker: num_workers,
             input_path: gz_path.to_owned(),
-            chunk_assignments: index.distribute_chunks(nworker),
+            chunk_assignments: index.distribute_chunks(num_workers),
             index,
         }
     }
 
     /// A reader of the record-aligned byte range of this worker.
-    pub fn get_readers(&self) -> impl Iterator<Item = Result<GzipStreamReader>> {
-        (0..self.nworker).map(|worker_id| self.get_worker_stream(worker_id))
+    pub fn readers(&self) -> impl Iterator<Item = Result<GzipStreamReader>> {
+        (0..self.nworker).map(|worker_id| self.get_reader(worker_id))
     }
 
     /// A reader of the record-aligned byte range of this worker.
-    pub fn get_worker_stream(&self, worker_id: usize) -> Result<GzipStreamReader> {
+    pub fn get_reader(&self, worker_id: usize) -> Result<GzipStreamReader> {
         if worker_id >= self.nworker {
             anyhow::bail!(
                 "Requested work for worker {}, but only {} workers were registered.",
@@ -92,12 +82,13 @@ impl MimParser {
     /// A [`needletail::FastxReader`] over the records of this worker.
     ///
     /// Convenience wrapper around [`Self::get_worker_stream`].
-    pub fn get_worker_needletail_reader<'a>(
+    #[cfg(feature = "needletail")]
+    pub fn get_needletail_reader<'a>(
         &'a self,
         worker_id: usize,
-    ) -> Result<Box<dyn FastxReader + 'a>, ParseError> {
+    ) -> Result<Box<dyn needletail::FastxReader + 'a>, needletail::errors::ParseError> {
         needletail::parse_fastx_reader(
-            self.get_worker_stream(worker_id)
+            self.get_reader(worker_id)
                 .expect("could not get byte-limited stream"),
         )
     }
@@ -105,13 +96,12 @@ impl MimParser {
     /// An iterator over the [`needletail::SequenceRecord`] records records of this worker.
     ///
     /// Convenience wrapper around [`Self::get_worker_stream`] and [`Self::get_worker_needletail_reader`].
-    pub fn get_worker_iter<'a>(&'a self, worker_id: usize) -> Result<ReadIter<'a>> {
-        let stream = self.get_worker_stream(worker_id)?;
+    #[cfg(feature = "needletail")]
+    pub fn get_needletail_iter<'a>(&'a self, worker_id: usize) -> Result<ReadIter<'a>> {
+        let stream = self.get_reader(worker_id)?;
         let fastx_reader = needletail::parse_fastx_reader(stream).expect("invalid reader");
 
-        Ok(ReadIter {
-            reader: fastx_reader,
-        })
+        Ok(ReadIter::new(fastx_reader))
     }
 }
 
@@ -151,10 +141,15 @@ impl MultiPairParser {
         })
     }
 
+    #[cfg(feature = "needletail")]
     pub fn get_needletail_parsers_for_worker<'a>(
         &'a self,
         worker_id: usize,
-    ) -> anyhow::Result<(Box<dyn FastxReader + 'a>, Box<dyn FastxReader + 'a>)> {
+    ) -> anyhow::Result<(
+        Box<dyn needletail::FastxReader + 'a>,
+        Box<dyn needletail::FastxReader + 'a>,
+    )> {
+        use std::io::Read;
         if worker_id < self.nworker {
             let gzfq = GzipStreamReader::read_range(
                 &self.fpaths[0],
@@ -209,3 +204,34 @@ impl MultiPairParser {
         }
     }
 }
+
+#[cfg(feature = "needletail")]
+mod record_iter {
+    use lender::prelude::*;
+    use needletail::errors::ParseError;
+    use needletail::parser::{FastxReader, SequenceRecord};
+
+    pub struct ReadIter<'a> {
+        reader: Box<dyn FastxReader + 'a>,
+    }
+
+    impl<'a> ReadIter<'a> {
+        pub fn new(reader: Box<dyn FastxReader + 'a>) -> Self {
+            Self { reader }
+        }
+    }
+
+    impl<'this, 'lend> Lending<'lend> for ReadIter<'this> {
+        type Lend = Result<SequenceRecord<'lend>, ParseError>;
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    impl<'this> Lender for ReadIter<'this> {
+        fn next(&mut self) -> Option<Lend<'_, Self>> {
+            self.reader.next()
+        }
+    }
+}
+
+#[cfg(feature = "needletail")]
+pub use record_iter::ReadIter;
