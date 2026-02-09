@@ -2,7 +2,7 @@ use crate::mim_types::{DecompressionMode, MimIndex};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-use tracing::{debug, trace};
+use tracing::trace;
 
 /// Buffer size for the input file.
 /// Around L2 cache size and a bit smaller than the 1MB of the indexer,
@@ -140,10 +140,17 @@ impl Drop for ZStreamWrapper {
 
 /// Reader for streaming decompression from a gzip checkpoint
 pub struct GzipStreamReader {
+    /// .gz file being inflated.
     file: BufReader<File>,
+    /// The underlying zlib stream.
     zstream: ZStreamWrapper,
+    /// The current position in the decompressed output.
     out_pos: u64,
+    /// The mode of the .gz file. Typically GZIP.
     file_mode: DecompressionMode,
+    /// The current inflate mode.
+    ///
+    /// This starts as RAW, and changes to GZIP on blocked gzip files.
     current_mode: DecompressionMode,
 }
 
@@ -179,10 +186,8 @@ impl GzipStreamReader {
         let mut zstream = ZStreamWrapper::new();
         zstream.init(DecompressionMode::RAW)?;
 
-        // Set the decompression dictionary FIRST (before any inflation)
-        if checkpoint.out_pos > 0 {
-            zstream.set_context(&checkpoint.window)?;
-        }
+        // Set the decompression dictionary
+        zstream.set_context(&checkpoint.window)?;
 
         // Handle bit-level alignment
         if checkpoint.bits > 0 {
@@ -214,6 +219,7 @@ impl io::Read for GzipStreamReader {
     /// Handles multi-member gzip files (including BGZF)
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let len = buffer.len();
+        trace!("Buffer len {len}");
         // FIXME: Handle the chunk-end: down-size buffer as needed.
         let mut total_copied = 0;
 
@@ -221,22 +227,25 @@ impl io::Read for GzipStreamReader {
         self.zstream.strm.avail_out = len as u32;
 
         while total_copied < len {
-            let strm = &mut self.zstream.strm;
-
             let input_buffer = self.file.fill_buf()?;
             if input_buffer.is_empty() {
                 return Ok(total_copied);
             }
-            strm.avail_in = input_buffer.len() as u32;
-            strm.next_in = input_buffer.as_ptr();
+            self.zstream.strm.avail_in = input_buffer.len() as u32;
+            self.zstream.strm.next_in = input_buffer.as_ptr();
             // WAS: Z_NO_FLUSH
-            let (end_of_stream, consumed, produced) = self.zstream.inflate(libz_rs_sys::Z_BLOCK)?;
+            let (end_of_stream, consumed, produced) =
+                self.zstream.inflate(libz_rs_sys::Z_NO_FLUSH)?;
             self.file.consume(consumed as usize);
 
-            // trace!(
-            //     "STATE: {:>16b} ret {ret} consumed {}  produced {}",
-            //     strm.data_type, consumed, produced
-            // );
+            trace!(
+                "STATE: {:>16b} {end_of_stream} consumed {}  produced {} avail_in {} avail_out {}",
+                self.zstream.strm.data_type,
+                consumed,
+                produced,
+                self.zstream.strm.avail_in,
+                self.zstream.strm.avail_out
+            );
 
             total_copied += produced as usize;
             self.out_pos += produced as u64;
