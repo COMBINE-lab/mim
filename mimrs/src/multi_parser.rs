@@ -112,7 +112,7 @@ fn get_worker_stream_helper(
     index: &MimIndex,
 ) -> Result<(StreamReaderContext, GzipStreamReader)> {
     let chunk_range = chunk_assignments[worker_id].clone();
-    let mut gzfq = GzipStreamReader::open_at_checkpoint(fpath, index, chunk_range.start)?;
+    let mut gzfq = GzipStreamReader::open_for_checkpoint_range(fpath, index, chunk_range.clone())?;
 
     let first_record_rank = index.record_boundaries[chunk_range.start].next_record_idx;
     let record_offset = index.record_boundaries[chunk_range.start].next_record_pos;

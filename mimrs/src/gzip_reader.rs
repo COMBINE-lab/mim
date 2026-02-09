@@ -1,6 +1,7 @@
 use crate::mim_types::{DecompressionMode, MimIndex};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
+use std::ops::Range;
 use std::path::Path;
 use tracing::trace;
 
@@ -146,6 +147,8 @@ pub struct GzipStreamReader {
     zstream: ZStreamWrapper,
     /// The current position in the decompressed output.
     out_pos: u64,
+    /// The output position where this reader should end.
+    out_end_pos: u64,
     /// The mode of the .gz file. Typically GZIP.
     file_mode: DecompressionMode,
     /// The current inflate mode.
@@ -159,12 +162,29 @@ impl GzipStreamReader {
     pub fn open_at_checkpoint(
         gz_file_path: &Path,
         index: &MimIndex,
-        checkpoint_index: usize,
+        checkpoint: usize,
     ) -> io::Result<Self> {
-        if checkpoint_index >= index.checkpoints.len() as usize {
+        Self::open_for_checkpoint_range(gz_file_path, index, checkpoint..index.checkpoints.len())
+    }
+    /// Open a gzip file at a specific checkpoint
+    pub fn open_for_checkpoint_range(
+        gz_file_path: &Path,
+        index: &MimIndex,
+        checkpoint_range: Range<usize>,
+    ) -> io::Result<Self> {
+        let start_checkpoint = checkpoint_range.start;
+        let end_checkpoint = checkpoint_range.end;
+
+        if start_checkpoint >= index.checkpoints.len() as usize {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Invalid checkpoint index",
+                "Invalid start checkpoint index",
+            ));
+        }
+        if end_checkpoint >= index.record_boundaries.len() as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Invalid end checkpoint index",
             ));
         }
 
@@ -172,7 +192,7 @@ impl GzipStreamReader {
         let mut file = BufReader::with_capacity(INPUT_BUF_SIZE, file);
 
         // Get the checkpoint
-        let checkpoint = &index.checkpoints[checkpoint_index];
+        let checkpoint = &index.checkpoints[start_checkpoint];
 
         // Seek to the compressed position
         let seek_pos = if checkpoint.bits > 0 {
@@ -204,6 +224,7 @@ impl GzipStreamReader {
             file,
             zstream,
             out_pos: checkpoint.out_pos as u64,
+            out_end_pos: index.record_boundaries[end_checkpoint].next_record_pos,
             file_mode: index.mode,
             current_mode: DecompressionMode::RAW,
         })
@@ -217,8 +238,14 @@ impl GzipStreamReader {
 impl io::Read for GzipStreamReader {
     /// Read decompressed data from the stream
     /// Handles multi-member gzip files (including BGZF)
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+    fn read(&mut self, mut buffer: &mut [u8]) -> io::Result<usize> {
+        // Down-size output buffer to not read beyond our output range.
+        if buffer.len() > self.out_end_pos.strict_sub(self.out_pos) as usize {
+            buffer = &mut buffer[..(self.out_end_pos - self.out_pos) as usize];
+        }
+
         let len = buffer.len();
+
         trace!("Buffer len {len}");
         // FIXME: Handle the chunk-end: down-size buffer as needed.
         let mut total_copied = 0;
@@ -277,27 +304,4 @@ impl io::Read for GzipStreamReader {
 
         Ok(total_copied)
     }
-}
-
-// Example usage
-pub fn example_usage(gz_file: &Path, index: &MimIndex, checkpoint_idx: usize) -> io::Result<()> {
-    let mut reader = GzipStreamReader::open_at_checkpoint(gz_file, index, checkpoint_idx)?;
-
-    const BUFSIZE: usize = 131072;
-
-    let mut buffer = vec![0u8; BUFSIZE]; // 128KB
-    let mut total_read = 0;
-
-    loop {
-        let bytes_read = reader.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-
-        total_read += bytes_read;
-        // Process buffer[..bytes_read]
-    }
-
-    println!("Successfully read {} bytes from checkpoint", total_read);
-    Ok(())
 }
