@@ -1,5 +1,6 @@
 //! This file is based on zran C code which as transpiled to Rust by Claude.
 
+use crate::gzip_reader::ZStreamWrapper;
 use crate::mim_types::{
     Blake3Hash, DecompressionMode, DeflateCheckPoint, MIMINDEX_FILE_CONSTANT, MimIndex,
     RecordCheckpoint,
@@ -53,11 +54,6 @@ impl MimIndex {
 pub enum IndexError {
     Io(io::Error),
     Compression(String),
-    OutOfMemory,
-    PrematureEnd,
-    DataError,
-    InvalidHeader,
-    ZlibError(i32),
 }
 
 impl From<io::Error> for IndexError {
@@ -71,11 +67,6 @@ impl std::fmt::Display for IndexError {
         match self {
             IndexError::Io(e) => write!(f, "I/O error: {}", e),
             IndexError::Compression(s) => write!(f, "Compression error: {}", s),
-            IndexError::OutOfMemory => write!(f, "Out of memory"),
-            IndexError::PrematureEnd => write!(f, "Building index ended prematurely"),
-            IndexError::DataError => write!(f, "Compressed data error"),
-            IndexError::InvalidHeader => write!(f, "Invalid header"),
-            IndexError::ZlibError(code) => write!(f, "Zlib error code: {}", code),
         }
     }
 }
@@ -83,7 +74,7 @@ impl std::fmt::Display for IndexError {
 impl std::error::Error for IndexError {}
 
 /// Add an access point to the index
-fn add_point(
+fn add_checkpoint(
     index: &mut MimIndex,
     in_pos: i64,
     out_pos: i64,
@@ -109,9 +100,7 @@ fn add_point(
             .copy_from_slice(&output_ringbuf[OUTPUT_BUF_SIZE - suffix_copy..OUTPUT_BUF_SIZE]);
     }
 
-    // TODO:??
     let bits = (strm.data_type & 7) as u8;
-
     index.checkpoints.push(DeflateCheckPoint {
         out_pos,
         in_pos,
@@ -120,7 +109,6 @@ fn add_point(
     });
 
     let idx = index.checkpoints.len() - 1;
-
     trace!(
         "adding access point {} at {} (read) {} (written); distance {} vs chunk size {}  | window {window_size}",
         idx,
@@ -139,7 +127,7 @@ fn add_point(
 }
 
 struct DecompressionState {
-    strm: libz_rs_sys::z_stream,
+    zstrm: ZStreamWrapper,
     mode: DecompressionMode,
 
     /// Ringbuffer for decompression.
@@ -157,12 +145,8 @@ struct DecompressionState {
 
 impl DecompressionState {
     fn new() -> Self {
-        let mut strm: libz_rs_sys::z_stream = unsafe { std::mem::zeroed() };
-        strm.zalloc = None;
-        strm.zfree = None;
-
         Self {
-            strm,
+            zstrm: ZStreamWrapper::new(),
             in_pos: 0,
             out_pos: 0,
             mode: DecompressionMode::NONE,
@@ -176,25 +160,22 @@ impl DecompressionState {
 /// Handle the boundary between concatenated gzip members.
 ///
 /// Must only be called if there is more data available.
-fn handle_gzip_member_boundary(state: &mut DecompressionState, ret: &mut i32) {
-    if *ret == libz_rs_sys::Z_STREAM_END && state.mode == DecompressionMode::GZIP {
+fn handle_gzip_member_boundary(state: &mut DecompressionState, ret: i32) -> Result<(), IndexError> {
+    // Blocked GZIP is a thing, but blocked ZLIB and blocked DEFLATE are not.
+    // (DEFLATE is only a single stream.)
+    if ret == libz_rs_sys::Z_STREAM_END && state.mode == DecompressionMode::GZIP {
         trace!(
             "Z_STREAM_END detected: avail_in={}, beg={}, totout={}",
-            state.strm.avail_in, state.gzip_member_start, state.out_pos
+            state.zstrm.strm.avail_in, state.gzip_member_start, state.out_pos
         );
 
         // There is more input after the end of a gzip member
         // Reset the inflate state to read another gzip member
         // On success, this sets ret back to Z_OK to continue decompressing
-        *ret =
-            unsafe { libz_rs_sys::inflateReset2(&mut state.strm, DecompressionMode::GZIP as i32) };
-        trace!("Called inflateReset2, ret={}", ret);
-
-        if *ret == libz_rs_sys::Z_OK {
-            state.gzip_member_start = state.out_pos; // Reset history
-            trace!("Reset beg to {}", state.gzip_member_start);
-        }
+        state.zstrm.reset(DecompressionMode::GZIP)?;
+        state.gzip_member_start = state.out_pos;
     }
+    Ok(())
 }
 
 /// Build a deflate index from a gzip file using raw zlib API
@@ -216,86 +197,79 @@ fn deflate_index_build<R: BufRead>(
     while let input_buf = reader.fill_buf()?
         && input_buf.len() > 0
     {
-        state.strm.next_in = input_buf.as_ptr();
-        state.strm.avail_in = input_buf.len() as u32;
+        state.zstrm.strm.next_in = input_buf.as_ptr();
+        state.zstrm.strm.avail_in = input_buf.len() as u32;
 
         // At the start, set the decompression mode.
         // FIXME: Can the mode change between gzip members?
         if state.mode == DecompressionMode::NONE {
-            state.mode = detect_mode(input_buf);
-
-            unsafe {
-                check_error(libz_rs_sys::inflateInit2_(
-                    &mut state.strm,
-                    state.mode as i32,
-                    libz_rs_sys::zlibVersion(),
-                    std::mem::size_of::<libz_rs_sys::z_stream>() as i32,
-                ))
-            }?;
+            // Detect file mode based on the first magic bytes.
+            state.mode = match input_buf[0] {
+                b if b & 0x0f == 8 => DecompressionMode::ZLIB,
+                // gzip starts with 1F8B
+                0x1f => DecompressionMode::GZIP,
+                _ => DecompressionMode::RAW,
+            };
+            state.zstrm.init(state.mode)?;
         }
 
         // Hash the gzip file itself.
         hasher.update(input_buf);
 
         // Process the input buffer.
-        while state.strm.avail_in > 0 {
+        while state.zstrm.strm.avail_in > 0 {
             // In RAW mode, force a checkpoint at the start.
             if state.mode == DecompressionMode::RAW && index.checkpoints.is_empty() {
-                state.strm.data_type = 0x80;
+                state.zstrm.strm.data_type = 0x80;
             } else {
                 // If the last loop reached end-of-stream and there is more data, start a new member.
                 // FIXME: Does `reset_inflate` touch `avail_in`?
                 // TODO: Move back to end of the loop?
-                handle_gzip_member_boundary(&mut state, &mut ret);
-                check_error(ret)?;
+                handle_gzip_member_boundary(&mut state, ret)?;
 
                 // Wrap around the ring buffer.
-                if state.strm.avail_out == 0 {
-                    state.strm.avail_out = OUTPUT_BUF_SIZE as u32;
-                    state.strm.next_out = state.output_ringbuf.as_mut_ptr();
+                if state.zstrm.strm.avail_out == 0 {
+                    state.zstrm.strm.avail_out = OUTPUT_BUF_SIZE as u32;
+                    state.zstrm.strm.next_out = state.output_ringbuf.as_mut_ptr();
                 }
 
-                let in_before = state.strm.avail_in as i64;
-                let out_before = state.strm.avail_out as i64;
-                ret = unsafe { libz_rs_sys::inflate(&mut state.strm, libz_rs_sys::Z_BLOCK) };
-                let in_after = state.strm.avail_in as i64;
-                let out_after = state.strm.avail_out as i64;
-                let consumed = in_before - in_after;
-                let produced = out_before - out_after;
+                let (is_stream_end, consumed, produced) =
+                    state.zstrm.inflate(libz_rs_sys::Z_BLOCK)?;
 
                 trace!(
                     "STATE: {:>16b} ret {ret} consumed {}  produced {}",
-                    state.strm.data_type, consumed, produced
+                    state.zstrm.strm.data_type, consumed, produced
                 );
 
-                state.in_pos += consumed;
-                state.out_pos += produced;
+                state.in_pos += consumed as i64;
+                state.out_pos += produced as i64;
 
-                {
-                    // NOTE: Tracking: https://github.com/trifectatechfoundation/zlib-rs/issues/439
-                    // this *does not* seem to be necessary any longer, but I'm keeping it here just for
-                    // now.
-                    // Handle Z_DATA_ERROR that occurs at gzip member boundaries
-                    // When using Z_BLOCK mode with concatenated gzip files, inflate() can return
-                    // Z_DATA_ERROR when it encounters the length check at the end of a member,
-                    // especially if the member boundary doesn't align with a block boundary.
-                    // If we produced no output and we're in GZIP mode, treat this as Z_STREAM_END
-                    // to allow processing of the next member.
-                    if ret == libz_rs_sys::Z_DATA_ERROR
-                        && state.mode == DecompressionMode::GZIP
-                        && produced == 0
-                    {
-                        // This is likely a member boundary issue, treat as end of stream
-                        ret = libz_rs_sys::Z_STREAM_END;
-                        trace!("HERE");
-                    }
-                }
+                // {
+                //     // NOTE: Tracking: https://github.com/trifectatechfoundation/zlib-rs/issues/439
+                //     // this *does not* seem to be necessary any longer, but I'm keeping it here just for
+                //     // now.
+                //     // Handle Z_DATA_ERROR that occurs at gzip member boundaries
+                //     // When using Z_BLOCK mode with concatenated gzip files, inflate() can return
+                //     // Z_DATA_ERROR when it encounters the length check at the end of a member,
+                //     // especially if the member boundary doesn't align with a block boundary.
+                //     // If we produced no output and we're in GZIP mode, treat this as Z_STREAM_END
+                //     // to allow processing of the next member.
+                //     if ret == libz_rs_sys::Z_DATA_ERROR
+                //         && state.mode == DecompressionMode::GZIP
+                //         && produced == 0
+                //     {
+                //         // This is likely a member boundary issue, treat as end of stream
+                //         ret = libz_rs_sys::Z_STREAM_END;
+                //         trace!("HERE");
+                //     }
+                // }
 
-                // FIXME: Do something with the record counting.
                 let first_record_offset;
                 (num_records, first_record_offset) = record_counter.push_bytes(
-                    &state.output_ringbuf[OUTPUT_BUF_SIZE - out_before as usize
-                        ..OUTPUT_BUF_SIZE - out_after as usize],
+                    &state.output_ringbuf[OUTPUT_BUF_SIZE
+                        - state.zstrm.strm.avail_out as usize
+                        - produced as usize
+                        ..OUTPUT_BUF_SIZE - state.zstrm.strm.avail_out as usize],
                 );
                 if let Some(last) = index.record_boundaries.last_mut() {
                     if last.next_record_pos == u64::MAX
@@ -311,7 +285,7 @@ fn deflate_index_build<R: BufRead>(
             // FIXME: Doesn't this create a checkpoint right after the first read bytes of the file?
             // FIXME: What does ==0x80 mean? => The end of a gzip block. Is this ever not true?
             // What are the implications of blocks being 32kB? (are they?)
-            if (state.strm.data_type & 0xc0) == 0x80
+            if (state.zstrm.strm.data_type & 0xc0) == 0x80
                 && (index.checkpoints.is_empty()
                     || state.out_pos - state.last_checkpoint_pos >= chunk_size)
             {
@@ -330,13 +304,13 @@ fn deflate_index_build<R: BufRead>(
                     index.record_boundaries.pop();
                 }
 
-                add_point(
+                add_checkpoint(
                     &mut index,
                     state.in_pos,
                     state.out_pos,
                     state.gzip_member_start,
                     &state.output_ringbuf,
-                    &state.strm,
+                    &state.zstrm.strm,
                     chunk_size,
                 )?;
                 debug!(
@@ -363,13 +337,7 @@ fn deflate_index_build<R: BufRead>(
     });
 
     // FIXME: We probably have a memory leak now when this is not called on early aborts.
-    unsafe { libz_rs_sys::inflateEnd(&mut state.strm) };
-
-    // TODO: Inline this above.
-    if ret != libz_rs_sys::Z_STREAM_END {
-        assert!(ret != libz_rs_sys::Z_OK);
-        check_error(ret)?;
-    }
+    state.zstrm.end()?;
 
     // Finalize hash
     let hash = hasher.finalize();
@@ -386,25 +354,6 @@ fn deflate_index_build<R: BufRead>(
     index.plain_size = state.out_pos;
 
     Ok(index)
-}
-
-pub(crate) fn detect_mode(input_buf: &[u8]) -> DecompressionMode {
-    match input_buf[0] {
-        b if b & 0x0f == 8 => DecompressionMode::ZLIB,
-        // gzip starts with 1F8B
-        0x1f => DecompressionMode::GZIP,
-        _ => DecompressionMode::RAW,
-    }
-}
-
-fn check_error(ret: i32) -> Result<(), IndexError> {
-    match ret {
-        libz_rs_sys::Z_OK => Ok(()),
-        libz_rs_sys::Z_NEED_DICT => Err(IndexError::DataError),
-        libz_rs_sys::Z_MEM_ERROR => Err(IndexError::OutOfMemory),
-        libz_rs_sys::Z_BUF_ERROR => Err(IndexError::PrematureEnd),
-        _ => Err(IndexError::ZlibError(ret)),
-    }
 }
 
 /// Build the `.mim` index for `gzip_file` at either `output_file` or `<gzip_file>.mim`.

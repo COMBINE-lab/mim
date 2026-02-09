@@ -6,7 +6,7 @@ use tracing::trace;
 
 /// Wrapper around zlib's z_stream implementing Drop and encapsulating the unsafe.
 pub(crate) struct ZStreamWrapper {
-    strm: libz_rs_sys::z_stream,
+    pub strm: libz_rs_sys::z_stream,
     initialized: bool,
 }
 
@@ -108,16 +108,28 @@ impl ZStreamWrapper {
             produced as usize,
         ))
     }
+
+    /// Free
+    pub fn end(&mut self) -> io::Result<()> {
+        if self.initialized {
+            let ret = unsafe { libz_rs_sys::inflateEnd(&mut self.strm) };
+            if ret != libz_rs_sys::Z_OK {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("inflateEnd failed: {}", ret),
+                ));
+            }
+
+            self.initialized = false;
+        }
+        Ok(())
+    }
 }
 
 unsafe impl Send for ZStreamWrapper {}
 impl Drop for ZStreamWrapper {
     fn drop(&mut self) {
-        if self.initialized {
-            unsafe {
-                libz_rs_sys::inflateEnd(&mut self.strm);
-            }
-        }
+        self.end();
     }
 }
 
@@ -252,6 +264,7 @@ impl io::Read for GzipStreamReader {
         Ok(total_copied)
     }
 }
+
 // Example usage
 pub fn example_usage(gz_file: &Path, index: &MimIndex, checkpoint_idx: usize) -> io::Result<()> {
     let mut reader = GzipStreamReader::open_at_checkpoint(gz_file, index, checkpoint_idx)?;
