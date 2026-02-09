@@ -38,8 +38,6 @@ pub struct MultiParser {
     pub index: MimIndex,
 }
 
-unsafe impl Send for MultiParser {}
-
 pub struct MultiPairParser {
     pub nworker: usize,
     pub fpaths: Vec<PathBuf>,
@@ -48,8 +46,6 @@ pub struct MultiPairParser {
     pub chunk_assignments: Vec<Range<usize>>,
     pub indexes: Vec<MimIndex>,
 }
-
-unsafe impl Send for MultiPairParser {}
 
 /// Distributes x chunks evenly across t threads.
 /// Returns a vector of ranges where each range represents the chunk indices
@@ -81,17 +77,6 @@ fn distribute_chunks(x: usize, t: usize) -> Vec<Range<usize>> {
     ranges
 }
 
-fn get_worker_stream_helper(
-    worker_id: usize,
-    fpath: &Path,
-    chunk_assignments: &[Range<usize>],
-    index: &MimIndex,
-) -> Result<GzipStreamReader> {
-    let chunk_range = chunk_assignments[worker_id].clone();
-    let gzfq = GzipStreamReader::open_for_checkpoint_range(fpath, index, chunk_range.clone())?;
-    Ok(gzfq)
-}
-
 impl MultiParser {
     pub fn new_with_workers(fpath: &Path, ipath: &Path, nworker: usize) -> Self {
         let index = read_mim_index(ipath).expect("failed to load index");
@@ -117,8 +102,11 @@ impl MultiParser {
             )
         }
 
-        let gzfq =
-            get_worker_stream_helper(worker_id, &self.fpath, &self.chunk_assignments, &self.index)?;
+        let gzfq = GzipStreamReader::open_for_checkpoint_range(
+            &self.fpath,
+            &self.index,
+            (&self.chunk_assignments)[worker_id].clone(),
+        )?;
         Ok(gzfq)
     }
 
@@ -188,11 +176,10 @@ impl MultiPairParser {
         worker_id: usize,
     ) -> anyhow::Result<(Box<dyn FastxReader + 'a>, Box<dyn FastxReader + 'a>)> {
         if worker_id < self.nworker {
-            let gzfq = get_worker_stream_helper(
-                worker_id,
+            let gzfq = GzipStreamReader::open_for_checkpoint_range(
                 &self.fpaths[0],
-                &self.chunk_assignments,
                 &self.indexes[0],
+                (&self.chunk_assignments)[worker_id].clone(),
             )?;
             let first_record_rank = gzfq.record_idx_range().start;
             // now sync the second file up with the first
