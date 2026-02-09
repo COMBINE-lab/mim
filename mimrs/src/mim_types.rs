@@ -33,7 +33,6 @@ pub struct RecordCheckpoint {
     /// The 0-based index of the first record starting at or after this checkpoint.
     pub next_record_idx: u64,
     /// The offset in the full uncompressed data where the first record in this chunk starts.
-    /// TODO: The first incomplete byte is always skipped.
     pub next_record_pos: u64,
 }
 

@@ -141,14 +141,19 @@ impl Drop for ZStreamWrapper {
 
 /// Reader for streaming decompression from a gzip checkpoint
 pub struct GzipStreamReader {
+    /// The range of uncompressed output byte that this reader will produce.
+    ///
+    /// Guaranteed to start and end exactly at record boundaries.
+    output_range: Range<u64>,
+    /// The range of record indices that this reader will produce.
+    record_idx_range: Range<u64>,
+
     /// .gz file being inflated.
     file: BufReader<File>,
     /// The underlying zlib stream.
     zstream: ZStreamWrapper,
     /// The current position in the decompressed output.
     out_pos: u64,
-    /// The output position where this reader should end.
-    out_end_pos: u64,
     /// The mode of the .gz file. Typically GZIP.
     file_mode: DecompressionMode,
     /// The current inflate mode.
@@ -158,6 +163,13 @@ pub struct GzipStreamReader {
 }
 
 impl GzipStreamReader {
+    pub fn output_range(&self) -> &Range<u64> {
+        &self.output_range
+    }
+    pub fn record_idx_range(&self) -> &Range<u64> {
+        &self.record_idx_range
+    }
+
     /// Open a gzip file at a specific checkpoint
     pub fn open_at_checkpoint(
         gz_file_path: &Path,
@@ -172,16 +184,16 @@ impl GzipStreamReader {
         index: &MimIndex,
         checkpoint_range: Range<usize>,
     ) -> io::Result<Self> {
-        let start_checkpoint = checkpoint_range.start;
-        let end_checkpoint = checkpoint_range.end;
+        let cp_s = checkpoint_range.start;
+        let cp_e = checkpoint_range.end;
 
-        if start_checkpoint >= index.checkpoints.len() as usize {
+        if cp_s >= index.checkpoints.len() as usize {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Invalid start checkpoint index",
             ));
         }
-        if end_checkpoint >= index.record_boundaries.len() as usize {
+        if cp_e >= index.record_boundaries.len() as usize {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Invalid end checkpoint index",
@@ -192,7 +204,7 @@ impl GzipStreamReader {
         let mut file = BufReader::with_capacity(INPUT_BUF_SIZE, file);
 
         // Get the checkpoint
-        let checkpoint = &index.checkpoints[start_checkpoint];
+        let checkpoint = &index.checkpoints[cp_s];
 
         // Seek to the compressed position
         let seek_pos = if checkpoint.bits > 0 {
@@ -220,14 +232,22 @@ impl GzipStreamReader {
             zstream.insert_bits(checkpoint.bits as i32, bit_value)?;
         }
 
-        Ok(GzipStreamReader {
+        let mut reader = GzipStreamReader {
+            output_range: index.record_boundaries[cp_s].next_record_pos
+                ..index.record_boundaries[cp_e].next_record_pos,
+            record_idx_range: index.record_boundaries[cp_s].next_record_idx
+                ..index.record_boundaries[cp_e].next_record_idx,
             file,
             zstream,
             out_pos: checkpoint.out_pos as u64,
-            out_end_pos: index.record_boundaries[end_checkpoint].next_record_pos,
             file_mode: index.mode,
             current_mode: DecompressionMode::RAW,
-        })
+        };
+
+        let skip = reader.output_range.start as usize - checkpoint.out_pos as usize;
+        reader.read_exact(&mut vec![0u8; skip])?;
+
+        Ok(reader)
     }
     /// Get current uncompressed offset
     pub fn out_pos(&self) -> u64 {
@@ -240,8 +260,8 @@ impl io::Read for GzipStreamReader {
     /// Handles multi-member gzip files (including BGZF)
     fn read(&mut self, mut buffer: &mut [u8]) -> io::Result<usize> {
         // Down-size output buffer to not read beyond our output range.
-        if buffer.len() > self.out_end_pos.strict_sub(self.out_pos) as usize {
-            buffer = &mut buffer[..(self.out_end_pos - self.out_pos) as usize];
+        if buffer.len() > self.output_range.end.strict_sub(self.out_pos) as usize {
+            buffer = &mut buffer[..(self.output_range.end - self.out_pos) as usize];
         }
 
         let len = buffer.len();

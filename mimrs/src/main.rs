@@ -300,7 +300,7 @@ fn peek(args: &PeekCommand) -> anyhow::Result<()> {
     }
 
     let fastx_reader = needletail::parse_fastx_reader(gzfq).expect("invalid reader");
-    let mut ri = ReadIter::new(fastx_reader, args.nreads);
+    let mut ri = ReadIter::new(fastx_reader).take(args.nreads);
     while let Some(r) = ri.next() {
         let record = r.expect("invalid record");
         println!(

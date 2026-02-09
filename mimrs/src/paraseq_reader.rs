@@ -56,10 +56,10 @@ impl ParallelReader for MimReader {
         T: for<'a> paraseq::prelude::ParallelProcessor<Self::Rf<'a>>,
     {
         let multi_parser = MultiParser::new_with_workers(&self.file, &self.index, num_threads);
-        let mut readers: Vec<(usize, fastx::Reader<_>)> = (0..num_threads)
+        let mut readers: Vec<fastx::Reader<_>> = (0..num_threads)
             .map(|id| {
-                let (num_records, stream) = multi_parser.get_worker_stream(id).unwrap();
-                (num_records, fastx::Reader::new(stream).unwrap())
+                let stream = multi_parser.get_worker_stream(id).unwrap();
+                fastx::Reader::new(stream).unwrap()
             })
             .collect();
         process_truly_parallel(&mut readers, processor)
@@ -115,7 +115,7 @@ impl ParallelReader for MimReader {
 }
 
 fn process_truly_parallel<S, T>(
-    readers: &mut [(usize, S)],
+    readers: &mut [S],
     processor: &mut T,
 ) -> paraseq::parallel::Result<()>
 where
@@ -126,15 +126,14 @@ where
     thread::scope(|scope| -> paraseq::parallel::Result<()> {
         // Spawn worker threads
         let mut handles = Vec::new();
-        for (thread_id, (num_records, reader)) in readers.iter_mut().enumerate() {
+        for (thread_id, reader) in readers.iter_mut().enumerate() {
             let mut worker_processor = processor.clone();
             let mut record_set = reader.new_record_set();
 
             let handle = scope.spawn(move || -> paraseq::parallel::Result<()> {
                 worker_processor.set_thread_id(thread_id);
 
-                let mut i = 0;
-                'lp: loop {
+                loop {
                     let s1 = reader.fill(&mut record_set);
 
                     if !s1.map_err(Into::into)? {
@@ -145,11 +144,6 @@ where
 
                     for record in records {
                         worker_processor.process_record(record.map_err(Into::into)?)?;
-                        i += 1;
-                        if i == *num_records {
-                            worker_processor.on_batch_complete()?;
-                            break 'lp;
-                        }
                     }
 
                     worker_processor.on_batch_complete()?;

@@ -8,16 +8,14 @@ use needletail::parser::{FastxReader, SequenceRecord};
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use tracing::trace;
 
 pub struct ReadIter<'a> {
     reader: Box<dyn FastxReader + 'a>,
-    niter: usize,
 }
 
 impl<'a> ReadIter<'a> {
-    pub fn new(reader: Box<dyn FastxReader + 'a>, niter: usize) -> Self {
-        Self { reader, niter }
+    pub fn new(reader: Box<dyn FastxReader + 'a>) -> Self {
+        Self { reader }
     }
 }
 
@@ -28,12 +26,7 @@ impl<'this, 'lend> Lending<'lend> for ReadIter<'this> {
 #[allow(clippy::should_implement_trait)]
 impl<'this> Lender for ReadIter<'this> {
     fn next(&mut self) -> Option<Lend<'_, Self>> {
-        if self.niter > 0 {
-            self.niter -= 1;
-            self.reader.next()
-        } else {
-            None
-        }
+        self.reader.next()
     }
 }
 
@@ -88,58 +81,15 @@ fn distribute_chunks(x: usize, t: usize) -> Vec<Range<usize>> {
     ranges
 }
 
-#[derive(Clone, Debug)]
-struct StreamReaderContext {
-    pub niter: usize,  // number of successful iterations this stream should yield
-    pub nbytes: usize, // number of bytes this stream should yield
-    pub first_record_rank: u64, // the rank of the first complete read in this contex
-}
-
-impl StreamReaderContext {
-    pub fn new(niter: usize, nbytes: usize, first_record_rank: u64) -> Self {
-        Self {
-            niter,
-            nbytes,
-            first_record_rank,
-        }
-    }
-}
-
 fn get_worker_stream_helper(
     worker_id: usize,
     fpath: &Path,
     chunk_assignments: &[Range<usize>],
     index: &MimIndex,
-) -> Result<(StreamReaderContext, GzipStreamReader)> {
+) -> Result<GzipStreamReader> {
     let chunk_range = chunk_assignments[worker_id].clone();
-    let mut gzfq = GzipStreamReader::open_for_checkpoint_range(fpath, index, chunk_range.clone())?;
-
-    let first_record_rank = index.record_boundaries[chunk_range.start].next_record_idx;
-    let record_offset = index.record_boundaries[chunk_range.start].next_record_pos;
-    if record_offset > gzfq.out_pos() {
-        // discard the requisite number of bytes
-        let mut discard_buf = vec![0_u8; (record_offset - gzfq.out_pos()) as usize];
-        gzfq.read_exact(&mut discard_buf)?;
-    }
-
-    let (niter, nbytes) = if chunk_range.end >= index.record_boundaries.len() {
-        (
-            index.total_num_records as u64 - first_record_rank,
-            index.plain_size as u64 - record_offset,
-        )
-    } else {
-        let last_record_rank = index.record_boundaries[chunk_range.end].next_record_idx;
-        let last_record_offset = index.record_boundaries[chunk_range.end].next_record_pos;
-        (
-            last_record_rank - first_record_rank,
-            last_record_offset - record_offset,
-        )
-    };
-
-    Ok((
-        StreamReaderContext::new(niter as usize, nbytes as usize, first_record_rank),
-        gzfq,
-    ))
+    let gzfq = GzipStreamReader::open_for_checkpoint_range(fpath, index, chunk_range.clone())?;
+    Ok(gzfq)
 }
 
 impl MultiParser {
@@ -157,78 +107,38 @@ impl MultiParser {
         }
     }
 
-    pub fn get_worker_stream(&self, worker_id: usize) -> Result<(usize, GzipStreamReader)> {
-        if worker_id < self.nworker {
-            let (
-                StreamReaderContext {
-                    niter,
-                    nbytes: _,
-                    first_record_rank: _,
-                },
-                gzfq,
-            ) = get_worker_stream_helper(
-                worker_id,
-                &self.fpath,
-                &self.chunk_assignments,
-                &self.index,
-            )?;
-            Ok((niter, gzfq))
-        } else {
+    /// Returns a reader that returns exactly the chunk for the given worker.
+    pub fn get_worker_stream(&self, worker_id: usize) -> Result<GzipStreamReader> {
+        if worker_id >= self.nworker {
             anyhow::bail!(
                 "Requested work for worker {}, but only {} workers were registered.",
                 worker_id,
                 self.nworker
             )
         }
-    }
 
-    /// returns a reader that only reads a specific number of bytes
-    pub fn get_worker_stream_by_bytes(
-        &self,
-        worker_id: usize,
-    ) -> Result<(usize, std::io::Take<GzipStreamReader>)> {
-        if worker_id < self.nworker {
-            let (
-                StreamReaderContext {
-                    niter: _,
-                    nbytes,
-                    first_record_rank: _,
-                },
-                gzfq,
-            ) = get_worker_stream_helper(
-                worker_id,
-                &self.fpath,
-                &self.chunk_assignments,
-                &self.index,
-            )?;
-            Ok((nbytes, gzfq.take(nbytes as u64)))
-        } else {
-            anyhow::bail!(
-                "Requested work for worker {}, but only {} workers were registered.",
-                worker_id,
-                self.nworker
-            )
-        }
+        let gzfq =
+            get_worker_stream_helper(worker_id, &self.fpath, &self.chunk_assignments, &self.index)?;
+        Ok(gzfq)
     }
 
     pub fn get_needletail_parser_for_worker<'a>(
         &'a self,
         worker_id: usize,
     ) -> Result<Box<dyn FastxReader + 'a>, ParseError> {
-        let (nbytes, byte_limited_stream) = self
-            .get_worker_stream_by_bytes(worker_id)
+        let byte_limited_stream = self
+            .get_worker_stream(worker_id)
             .expect("could not get byte-limited stream");
-        trace!("Worker {worker_id} will yield {nbytes} total uncompressed bytes");
+        // trace!("Worker {worker_id} will yield {nbytes} total uncompressed bytes");
         needletail::parse_fastx_reader(byte_limited_stream)
     }
 
     pub fn get_worker_iter<'a>(&'a self, worker_id: usize) -> Result<ReadIter<'a>> {
-        let (niter, stream) = self.get_worker_stream(worker_id)?;
+        let stream = self.get_worker_stream(worker_id)?;
         let fastx_reader = needletail::parse_fastx_reader(stream).expect("invalid reader");
 
         Ok(ReadIter {
             reader: fastx_reader,
-            niter,
         })
     }
 }
@@ -278,19 +188,13 @@ impl MultiPairParser {
         worker_id: usize,
     ) -> anyhow::Result<(Box<dyn FastxReader + 'a>, Box<dyn FastxReader + 'a>)> {
         if worker_id < self.nworker {
-            let (
-                StreamReaderContext {
-                    niter: _,
-                    nbytes,
-                    first_record_rank,
-                },
-                gzfq,
-            ) = get_worker_stream_helper(
+            let gzfq = get_worker_stream_helper(
                 worker_id,
                 &self.fpaths[0],
                 &self.chunk_assignments,
                 &self.indexes[0],
             )?;
+            let first_record_rank = gzfq.record_idx_range().start;
             // now sync the second file up with the first
             // find the chunk we jump to in file 2
             let mut second_file_chunk = self.indexes[1]
@@ -319,7 +223,7 @@ impl MultiPairParser {
                 gzfq2.read_exact(&mut discard_buf)?;
             }
 
-            let r1 = needletail::parse_fastx_reader(gzfq.take(nbytes as u64))?;
+            let r1 = needletail::parse_fastx_reader(gzfq)?;
             let mut r2 = needletail::parse_fastx_reader(gzfq2)?;
 
             // skip the reads to sync up with reader 1
