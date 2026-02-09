@@ -2,7 +2,12 @@ use crate::mim_types::{DecompressionMode, MimIndex};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-use tracing::trace;
+use tracing::{debug, trace};
+
+/// Buffer size for the input file.
+/// Around L2 cache size and a bit smaller than the 1MB of the indexer,
+/// so that this doesn't overload L3 when run on many threads.
+const INPUT_BUF_SIZE: usize = 256 * 1024;
 
 /// Wrapper around zlib's z_stream implementing Drop and encapsulating the unsafe.
 pub(crate) struct ZStreamWrapper {
@@ -157,7 +162,7 @@ impl GzipStreamReader {
         }
 
         let file = File::open(gz_file_path)?;
-        let mut file = BufReader::new(file);
+        let mut file = BufReader::with_capacity(INPUT_BUF_SIZE, file);
 
         // Get the checkpoint
         let checkpoint = &index.checkpoints[checkpoint_index];
