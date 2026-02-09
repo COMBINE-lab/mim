@@ -54,14 +54,22 @@ pub struct MultiPairParser {
 
 impl MimParser {
     /// Create a `MimParser` for the given `.gz` file, `.gz.mim` files, and number of worker threads.
-    pub fn new(gz_path: &Path, index_path: &Path, nworker: usize) -> Self {
-        let index = MimIndex::read(index_path).expect("failed to load index");
+    pub fn new(gz_path: &Path, index_path: Option<&Path>, nworker: usize) -> Self {
+        let index_path = index_path
+            .map(|p| p.to_owned())
+            .unwrap_or_else(|| gz_path.with_added_extension("mim"));
+        let index = MimIndex::read(&index_path).expect("failed to load index");
         Self {
             nworker,
             input_path: gz_path.to_owned(),
             chunk_assignments: index.distribute_chunks(nworker),
             index,
         }
+    }
+
+    /// A reader of the record-aligned byte range of this worker.
+    pub fn get_readers(&self) -> impl Iterator<Item = Result<GzipStreamReader>> {
+        (0..self.nworker).map(|worker_id| self.get_worker_stream(worker_id))
     }
 
     /// A reader of the record-aligned byte range of this worker.

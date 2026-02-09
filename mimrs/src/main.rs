@@ -4,7 +4,6 @@ use mim::gzip_reader::GzipStreamReader;
 use mim::indexer;
 use mim::mim_types::MimIndex;
 use mim::multi_parser::{MimParser, MultiPairParser, ReadIter};
-use std::io;
 use std::sync::Arc;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 
@@ -60,15 +59,23 @@ struct InfoCommand {
 struct UnzipCommand {
     /// Input .fastx.gz file.
     #[arg(value_name = "FASTX_GZ")]
-    pub fastq_path: PathBuf,
+    pub gz_path: PathBuf,
 
     /// .mim file to use; default <FASTX_GZ>.mim.
     #[arg(short = 'm', long = "mim")]
     pub index_path: Option<PathBuf>,
 
+    /// Output path. .fastx or .fastx.<part_id> by default.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
     /// The number of .fastx.<part_id> parts to write.
     #[arg(short, long)]
     pub parts: Option<usize>,
+
+    /// Number of threads to use. Defaults to number of cores.
+    #[arg(short = 'j', long)]
+    pub threads: Option<usize>,
 }
 
 #[derive(Args, Debug)]
@@ -163,7 +170,7 @@ fn launch_paired_parser(args: &NucHistCommand) -> anyhow::Result<()> {
 fn launch_single_parser(args: &NucHistCommand) -> anyhow::Result<()> {
     let mp = Arc::new(MimParser::new(
         &args.fastq_paths[0],
-        &args.index_paths.as_deref().expect("valid at this point")[0],
+        Some(&args.index_paths.as_deref().expect("valid at this point")[0]),
         args.nthreads,
     ));
 
@@ -311,6 +318,30 @@ fn peek(args: &PeekCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
+    // let threads = args.threads.unwrap_or_else(|| num_cpus::get());
+    let parts = args.parts.unwrap_or(1);
+    let mim_parser = MimParser::new(&args.gz_path, args.index_path.as_deref(), parts);
+    let readers = mim_parser.get_readers();
+
+    let output = args
+        .output
+        .clone()
+        .unwrap_or_else(|| args.gz_path.with_extension(""));
+
+    std::thread::scope(|s| {
+        for (i, reader) in readers.enumerate() {
+            let output = output.with_added_extension(format!("{i}"));
+            s.spawn(move || {
+                let mut writer = std::fs::File::create(output).expect("could not create output");
+                std::io::copy(&mut reader.expect("valid reader"), &mut writer)
+                    .expect("failed to write output");
+            });
+        }
+    });
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
@@ -322,7 +353,7 @@ fn main() -> anyhow::Result<()> {
     // it is set.  Otherwise, we'll set the default
     tracing_subscriber::registry()
         // log level to INFO.
-        .with(fmt::layer().with_writer(io::stderr))
+        .with(fmt::layer().with_writer(std::io::stderr))
         .with(filtered_layer)
         .init();
     let mut cli = Cli::try_parse()?;
@@ -333,8 +364,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Info(ref inspect_args) => {
             inspect_index(inspect_args)?;
         }
-        Commands::Unzip(ref _inspect_args) => {
-            todo!()
+        Commands::Unzip(ref unzip_args) => {
+            unzip(unzip_args)?;
         }
         Commands::Peek(ref peek_args) => {
             peek(peek_args)?;

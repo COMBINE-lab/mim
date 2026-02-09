@@ -55,7 +55,7 @@ impl ParallelReader for MimReader {
     where
         T: for<'a> paraseq::prelude::ParallelProcessor<Self::Rf<'a>>,
     {
-        let multi_parser = MimParser::new(&self.file, &self.index, num_threads);
+        let multi_parser = MimParser::new(&self.file, Some(&self.index), num_threads);
         let mut readers: Vec<fastx::Reader<_>> = (0..num_threads)
             .map(|id| {
                 let stream = multi_parser.get_worker_stream(id).unwrap();

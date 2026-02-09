@@ -23,6 +23,7 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 parking_lot = "0.12.5"
 bincode = { version = "2.0.1", features = ["derive"] }
 memchr = "2.8.0"
+num_cpus = "1.17.0"
 
 [profile.release]
 debug = true
