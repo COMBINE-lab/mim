@@ -38,12 +38,10 @@ impl MimIndex {
         Self {
             version: 0,
             metadata: Vec::new(),
-            num_checkpoints: 0,
             mode: crate::mim_types::DecompressionMode::NONE,
             plain_size: 0,
             checkpoints: Vec::new(),
             record_boundaries: Vec::new(),
-            num_record_chunks: 0,
             total_num_records: 0,
             plain_hash: Blake3Hash::default(),
         }
@@ -118,20 +116,19 @@ fn add_point(
         out_pos,
         in_pos,
         bits,
-        window_size: window_size as u32,
         window,
     });
 
-    index.num_checkpoints += 1;
+    let idx = index.checkpoints.len() - 1;
 
     trace!(
         "adding access point {} at {} (read) {} (written); distance {} vs chunk size {}  | window {window_size}",
-        index.num_checkpoints,
+        idx,
         in_pos,
         out_pos,
         out_pos
-            - (if index.num_checkpoints > 1 {
-                index.checkpoints[index.num_checkpoints as usize - 2].out_pos
+            - (if idx > 0 {
+                index.checkpoints[idx as usize - 1].out_pos
             } else {
                 0
             }),
@@ -243,7 +240,7 @@ fn deflate_index_build<R: BufRead>(
         // Process the input buffer.
         while state.strm.avail_in > 0 {
             // In RAW mode, force a checkpoint at the start.
-            if state.mode == DecompressionMode::RAW && index.num_checkpoints == 0 {
+            if state.mode == DecompressionMode::RAW && index.checkpoints.is_empty() {
                 state.strm.data_type = 0x80;
             } else {
                 // If the last loop reached end-of-stream and there is more data, start a new member.
@@ -315,7 +312,7 @@ fn deflate_index_build<R: BufRead>(
             // FIXME: What does ==0x80 mean? => The end of a gzip block. Is this ever not true?
             // What are the implications of blocks being 32kB? (are they?)
             if (state.strm.data_type & 0xc0) == 0x80
-                && (index.num_checkpoints == 0
+                && (index.checkpoints.is_empty()
                     || state.out_pos - state.last_checkpoint_pos >= chunk_size)
             {
                 // If the previous checkpoint does not have a corresponding record start, drop it.
@@ -326,11 +323,11 @@ fn deflate_index_build<R: BufRead>(
                 {
                     debug!(
                         "Dropping checkpoint {} at out_pos={} with no record start",
-                        index.num_checkpoints, state.out_pos
+                        index.checkpoints.len(),
+                        state.out_pos
                     );
                     index.checkpoints.pop();
                     index.record_boundaries.pop();
-                    index.num_checkpoints -= 1;
                 }
 
                 add_point(
@@ -344,7 +341,9 @@ fn deflate_index_build<R: BufRead>(
                 )?;
                 debug!(
                     "Added checkpoint at totin={}, totout={}, checkpoint={}",
-                    state.in_pos, state.out_pos, index.num_checkpoints
+                    state.in_pos,
+                    state.out_pos,
+                    index.checkpoints.len()
                 );
                 trace!("Num records in this chunk: {}", num_records);
                 index.record_boundaries.push(RecordCheckpoint {
@@ -424,7 +423,7 @@ pub fn build_index(
 
     info!(
         "zran: built index with {} access points!",
-        index.num_checkpoints
+        index.checkpoints.len()
     );
 
     index.version = 0;
@@ -437,7 +436,6 @@ pub fn build_index(
     // Process FASTQ records
     trace!("Getting record boundaries from FASTQ file");
 
-    index.num_record_chunks = index.record_boundaries.len() as i64 - 1;
     index.total_num_records = index.record_boundaries.last().unwrap().next_record_idx as _;
     info!("Got {} records from FASTQ file.", index.total_num_records);
 
@@ -455,7 +453,7 @@ pub fn build_index(
 
     info!(
         "zran: wrote index with {} access points to {}",
-        index.num_checkpoints,
+        index.checkpoints.len(),
         output_path.to_string_lossy()
     );
 

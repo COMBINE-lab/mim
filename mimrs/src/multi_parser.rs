@@ -146,7 +146,7 @@ impl MultiParser {
     pub fn new_with_workers(fpath: &Path, ipath: &Path, nworker: usize) -> Self {
         let index = read_mim_index(ipath).expect("failed to load index");
 
-        let chunk_assignments = distribute_chunks(index.num_record_chunks as usize, nworker);
+        let chunk_assignments = distribute_chunks(index.checkpoints.len(), nworker);
 
         Self {
             nworker,
@@ -253,7 +253,8 @@ impl MultiPairParser {
             indexes
                 .first()
                 .expect("at least two indexes")
-                .num_record_chunks as usize,
+                .checkpoints
+                .len(),
             nworker,
         );
 

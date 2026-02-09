@@ -275,7 +275,7 @@ fn inspect_index(args: &InfoCommand) -> anyhow::Result<()> {
         "blake3 checksum = {}",
         base16::encode_lower(&index.plain_hash)
     );
-    println!("number of checkpoints = {}", index.num_checkpoints);
+    println!("number of checkpoints = {}", index.checkpoints.len());
     Ok(())
 }
 

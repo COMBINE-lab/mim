@@ -23,8 +23,6 @@ pub struct DeflateCheckPoint {
     pub bits: u8,
     /// Byte offset in the decompressed data where this chunk starts.
     pub out_pos: i64,
-    /// Number of bytes in the window that are used as context for LZ.
-    pub window_size: u32,
     /// The preceding 32KiB (or less) window for deflate state.
     pub window: Vec<u8>,
 }
@@ -57,11 +55,6 @@ pub struct MimIndex {
     pub version: u64,
     /// CBOR serialized json string.
     pub metadata: Vec<u8>, // CBOR blob (deserialized)
-    /// Number of checkpoints.
-    // FIXME: drop for just checkpoints.len()?
-    pub num_checkpoints: i32,
-    // FIXME: drop for record_boundaries.len()?
-    pub num_record_chunks: i64,
     /// Total size in bytes of the decompressed gzip data.
     pub plain_size: i64,
     /// Total number of records.

@@ -137,7 +137,7 @@ impl GzipStreamReader {
         index: &MimIndex,
         checkpoint_index: usize,
     ) -> io::Result<Self> {
-        if checkpoint_index >= index.num_checkpoints as usize {
+        if checkpoint_index >= index.checkpoints.len() as usize {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Invalid checkpoint index",
