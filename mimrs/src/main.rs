@@ -13,8 +13,18 @@ use std::io::{BufRead, Read};
 use std::path::PathBuf;
 use std::thread::JoinHandle;
 
+mod server;
+
 /// Size of input and output buffer for file IO.
 const BUF_SIZE: usize = 256 * 1024;
+
+/// Simple program to deal with mim files
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    commands: Commands,
+}
 
 #[derive(Subcommand, Debug)]
 enum Commands {
@@ -31,6 +41,15 @@ enum Commands {
     Peek(PeekCommand),
     /// print some reads
     NucHist(NucHistCommand),
+
+    /// Run the server.
+    Server(ServerCommand),
+
+    /// Upload a mim file.
+    Upload(UploadCommand),
+
+    /// Download a file.
+    Download(DownloadCommand),
 }
 
 #[derive(Args, Debug)]
@@ -103,6 +122,43 @@ struct PeekCommand {
 }
 
 #[derive(Args, Debug)]
+struct ServerCommand {
+    /// Path to unix socket to listen on.
+    #[arg(long)]
+    pub socket: PathBuf,
+
+    /// The directory containing the .mim files.
+    #[arg(long)]
+    pub dir: PathBuf,
+}
+
+#[derive(Args, Debug)]
+struct DownloadCommand {
+    /// The .fastx.gz file to hash and download the .mim for.
+    #[arg(value_name = "FASTX_GZ")]
+    pub gz_path: PathBuf,
+
+    /// Output location of the .mim. Default <FASTX_GZ>.mim.
+    #[arg(short = 'm', long = "mim")]
+    pub index_path: Option<PathBuf>,
+
+    /// Path to unix socket to connect to.
+    #[arg(long)]
+    pub socket: PathBuf,
+}
+
+#[derive(Args, Debug)]
+struct UploadCommand {
+    /// The .mim file to upload.
+    #[arg(value_name = "MIM")]
+    pub index_path: PathBuf,
+
+    /// Path to unix socket to connect to.
+    #[arg(long)]
+    pub socket: PathBuf,
+}
+
+#[derive(Args, Debug)]
 struct NucHistCommand {
     /// path to gzipped fastq files; either a single path, or a ',' separated pair (interpreted as
     /// paired-end)
@@ -116,14 +172,6 @@ struct NucHistCommand {
 
     /// number of threads to use
     pub nthreads: usize,
-}
-
-/// Simple program to deal with mim files
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Cli {
-    #[command(subcommand)]
-    commands: Commands,
 }
 
 fn launch_paired_parser(args: &NucHistCommand) -> anyhow::Result<()> {
@@ -278,7 +326,7 @@ fn build_index(args: &BuildCommand) -> anyhow::Result<()> {
 }
 
 fn inspect_index(args: &InfoCommand) -> anyhow::Result<()> {
-    let index = MimIndex::read(&args.index_path)?;
+    let index = MimIndex::read_path(&args.index_path)?;
     let metadata_dict: serde_cbor::Value =
         serde_cbor::from_slice(&index.metadata).map_err(|e| {
             std::io::Error::new(
@@ -298,7 +346,7 @@ fn inspect_index(args: &InfoCommand) -> anyhow::Result<()> {
 }
 
 fn peek(args: &PeekCommand) -> anyhow::Result<()> {
-    let index = MimIndex::read(&args.index_path).expect("failed to load index");
+    let index = MimIndex::read_path(&args.index_path).expect("failed to load index");
     assert!(
         args.checkpoint < index.checkpoints.len(),
         "requested checkpoint {} >= number of checkpoints {}",
@@ -476,7 +524,7 @@ fn main() -> anyhow::Result<()> {
         .with(fmt::layer().with_writer(std::io::stderr))
         .with(filtered_layer)
         .init();
-    let mut cli = Cli::try_parse()?;
+    let mut cli = Cli::parse();
     match cli.commands {
         Commands::Build(ref build_args) => {
             build_index(build_args)?;
@@ -492,6 +540,21 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::NucHist(ref mut hist_args) => {
             nuc_hist(hist_args)?;
+        }
+        Commands::Server(ref server_args) => {
+            server::server(&server_args.socket, &server_args.dir)?;
+        }
+        Commands::Download(ref download_args) => {
+            let data = server::download_mim(&download_args.gz_path, &download_args.socket)
+                .expect("download not found");
+            let index_path = download_args
+                .index_path
+                .clone()
+                .unwrap_or_else(|| download_args.gz_path.with_added_extension("mim"));
+            std::fs::write(index_path, data).unwrap();
+        }
+        Commands::Upload(ref upload_args) => {
+            server::upload_mim(&upload_args.index_path, &upload_args.socket);
         }
     }
     Ok(())

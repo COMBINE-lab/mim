@@ -6,6 +6,8 @@ use std::{
     path::Path,
 };
 
+use tracing::debug;
+
 /// Magic file signature constant that is written at the start of each .mim file.
 /// <https://en.wikipedia.org/wiki/List_of_file_signatures>
 pub const MIMINDEX_FILE_CONSTANT: &[u8; 8] = b"MIMINDEX";
@@ -55,10 +57,12 @@ pub struct MimIndex {
     // Maybe 10000 * major + 100 * minor + patch?
     pub version: u64,
 
+    /// Blake3 hash of the .gz file.
+    /// Stored early so it can be scanned quickly.
+    pub input_hash: Blake3Hash,
+
     /// Whether the file is gzip, zlib, or raw DEFLATE.
     pub mode: DecompressionMode,
-    /// Blake3 hash of the .gz file.
-    pub input_hash: Blake3Hash,
 
     /// CBOR serialized json string.
     pub metadata: Vec<u8>, // CBOR blob (deserialized)
@@ -76,9 +80,51 @@ pub struct MimIndex {
 }
 
 impl MimIndex {
-    /// Decompress and then deserialize a .mim file.
-    pub fn read(path: &Path) -> Result<MimIndex> {
+    /// Read only the Blake3 hash from a .mim file, without decompressing or deserializing the whole file.
+    pub fn read_hash_from_mim_file(path: &Path) -> Result<Blake3Hash> {
         let reader = File::open(path)?;
+        Self::read_hash_from_std_read(reader)
+    }
+
+    pub fn read_hash_from_std_read(
+        reader: impl std::io::Read,
+    ) -> std::result::Result<[u8; 32], Error> {
+        let buf_reader = std::io::BufReader::with_capacity(256, reader);
+        let mut gz_reader = flate2::bufread::GzDecoder::new(buf_reader);
+        {
+            // Check file constant.
+            let mut file_signature = [0; 8];
+            gz_reader.read_exact(&mut file_signature)?;
+            if file_signature != *MIMINDEX_FILE_CONSTANT {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "File signature does not match MIMINDEX constant.",
+                ));
+            }
+        }
+        // Skip the version (8 bytes).
+        let mut version_buf = [0; 8];
+        gz_reader.read_exact(&mut version_buf)?;
+        assert_eq!(
+            u64::from_le_bytes(version_buf),
+            0,
+            "Unsupported MIMINDEX version."
+        );
+        // Read the next 32 bytes for the hash.
+        let mut input_hash = [0; 32];
+        gz_reader.read_exact(&mut input_hash)?;
+        debug!("Read input hash {:?} from .mim file.", input_hash);
+        Ok(input_hash)
+    }
+
+    /// Decompress and then deserialize a .mim file.
+    pub fn read_path(path: &Path) -> Result<MimIndex> {
+        let reader = File::open(path)?;
+        Self::read_reader(reader)
+    }
+
+    /// Decompress and then deserialize a .mim file.
+    pub fn read_reader(reader: impl std::io::Read) -> Result<MimIndex> {
         let buf_reader = std::io::BufReader::with_capacity(256 * 1024, reader);
         let mut gz_reader = flate2::bufread::GzDecoder::new(buf_reader);
         {

@@ -39,10 +39,10 @@ impl MimReader {
 
     /// Create a `MimReader` for the given `.gz` and `.mim` files, and number of worker threads.
     pub fn new_with_index(gz_path: &Path, index_path: &Path, num_workers: usize) -> Self {
-        let index = MimIndex::read(&index_path).expect("failed to load index");
+        let index = MimIndex::read_path(&index_path).expect("failed to load index");
 
         {
-            let hash = hash_input_file(gz_path);
+            let hash = hash_gz_file(gz_path);
             if hash != index.input_hash {
                 panic!(
                     "Input file {} hash does not match index hash in {}. Expected {:?}, got {:?}.",
@@ -110,7 +110,8 @@ impl MimReader {
     }
 }
 
-pub fn hash_input_file(gz_path: &Path) -> [u8; 32] {
+/// Compute the black3 hash of a `.gz` file.
+pub fn hash_gz_file(gz_path: &Path) -> [u8; 32] {
     debug!("hashing input file");
     let mut hasher = blake3::Hasher::new();
     let mut reader = std::fs::File::open(gz_path).expect("could not open gzip file for hashing");
@@ -146,7 +147,7 @@ impl MultiMimReader {
 
         let indexes: Vec<MimIndex> = index_paths
             .iter()
-            .map(|path| MimIndex::read(path.as_ref()).expect("failed to load index"))
+            .map(|path| MimIndex::read_path(path.as_ref()).expect("failed to load index"))
             .collect();
 
         // distribute chunks based on the first file

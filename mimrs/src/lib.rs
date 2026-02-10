@@ -68,7 +68,7 @@ pub mod types;
 use std::path::Path;
 
 pub use indexer::build_mim_index;
-pub use reader::{MimReader, MultiMimReader, ReadIter};
+pub use reader::{MimReader, MultiMimReader, ReadIter, hash_gz_file};
 
 /// Read the `.mim` file corresponding to the given `.gz` and initialize it for `num_workers`.
 pub fn mim_reader(gz_path: &Path, num_workers: usize) -> MimReader {
