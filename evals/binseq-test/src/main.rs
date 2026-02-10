@@ -9,9 +9,10 @@ use binseq::{
 };
 use clap::Parser;
 use paraseq::{
-    Record, fastx,
+    fastx,
     parallel::ParallelProcessor as ParaseqParallelProcessor,
     prelude::{PairedParallelProcessor, ParallelReader as ParaseqParallelReader},
+    Record,
 };
 use parking_lot::Mutex;
 
@@ -101,7 +102,10 @@ impl Cli {
         self.input.len() == 2
     }
     pub fn is_binseq(&self) -> bool {
-        !self.is_paired() && (self.input[0].ends_with(".bq") || self.input[0].ends_with(".vbq"))
+        !self.is_paired()
+            && (self.input[0].ends_with(".bq")
+                || self.input[0].ends_with(".vbq")
+                || self.input[0].ends_with(".cbq"))
     }
     pub fn single_path(&self) -> &str {
         &self.input[0]

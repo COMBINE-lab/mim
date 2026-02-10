@@ -85,6 +85,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "autocfg"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+
+[[package]]
 name = "bgzip"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -98,9 +104,9 @@ dependencies = [
 
 [[package]]
 name = "binseq"
-version = "0.8.3"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89bebe696008fa17c90746c7fe3b5ee929779bdc2935768b110245acd99a18af"
+checksum = "1fc2a73947d04711efc8482b9580ba978176c7a41a5bb4b55f16eaf9efc80624"
 dependencies = [
  "anyhow",
  "auto_impl",
@@ -108,9 +114,13 @@ dependencies = [
  "bytemuck",
  "byteorder",
  "itoa",
+ "memchr",
  "memmap2",
  "num_cpus",
+ "paraseq",
+ "parking_lot",
  "rand",
+ "sucds",
  "thiserror 2.0.17",
  "zstd",
 ]
@@ -135,15 +145,29 @@ checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
 
 [[package]]
 name = "bitnuc"
-version = "0.3.2"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b44870e3f5efdbb7720bf6fe5b516750faff4df2448810fdcacc74b885f4a07c"
+checksum = "d7871516cbb4e097e220623917e1491c995ee58c8018d929d4b1e76c378002bf"
 
 [[package]]
 name = "bytemuck"
 version = "1.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fbdf580320f38b612e485521afda1ee26d10cc9884efaaa750d383e13e3c5f4"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9abbd1bc6865053c427f7198e6af43bfdedc55ab791faed4fbd361d789575ff"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "byteorder"
@@ -363,9 +387,9 @@ dependencies = [
 
 [[package]]
 name = "itoa"
-version = "1.0.15"
+version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
+checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
 name = "jiff"
@@ -483,6 +507,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-traits"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "num_cpus"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -500,9 +533,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "paraseq"
-version = "0.4.7"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9744fb4bf9a6f1e6eb6fddc2bed36973563fc955f0342986dd221e960346e69c"
+checksum = "ac8bd9a3e86bdab599f10d07e7d7531b7363e1d50b502856c0fb0b3efc532e65"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -731,6 +764,16 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
+name = "sucds"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd324eaa05be64f105ea5269bb8aabd70e5dd57fa5c673b167f451b07d6c0dcd"
+dependencies = [
+ "anyhow",
+ "num-traits",
+]
 
 [[package]]
 name = "syn"
