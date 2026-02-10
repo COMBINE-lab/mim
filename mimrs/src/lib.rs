@@ -1,6 +1,6 @@
 mod indexer;
 #[cfg(feature = "paraseq")]
-mod paraseq_reader;
+mod paraseq_processor;
 mod reader;
 mod record_counter;
 

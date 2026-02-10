@@ -14,15 +14,18 @@ use paraseq::parallel::ProcessError;
 impl ParallelReader for MimReader {
     type Rf<'a> = paraseq::fastx::RefRecord<'a>;
 
+    /// Process the records in the input file in parallel using the given [`paraseq::prelude::ParallelProcessor`].
+    ///
+    /// `num_threads` must equal the number of workers in the `MimReader`.
     fn process_parallel<T>(self, processor: &mut T, num_threads: usize) -> Result<()>
     where
         T: for<'a> paraseq::prelude::ParallelProcessor<Self::Rf<'a>>,
     {
         assert!(
-            num_threads == self.nworker,
+            num_threads == self.num_workers,
             "Number of threads ({}) must match the number of workers ({}) in the MimReader.",
             num_threads,
-            self.nworker
+            self.num_workers
         );
         thread::scope(|scope| -> paraseq::parallel::Result<()> {
             // Spawn worker threads
