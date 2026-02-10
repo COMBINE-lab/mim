@@ -83,7 +83,7 @@ impl MimReader {
         )
     }
 
-    /// An iterator over the [`needletail::parser::SequenceRecord`] records records of this worker.
+    /// A lending iterator over the [`needletail::parser::SequenceRecord`] records records of this worker.
     ///
     /// Convenience wrapper around [`Self::get_reader`] and [`Self::get_needletail_parser`].
     #[cfg(feature = "needletail")]

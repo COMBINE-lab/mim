@@ -355,7 +355,7 @@ fn deflate_index_build<R: BufRead>(
     Ok(index)
 }
 
-/// Build the `.mim` index for a `gzip_file`.
+/// Build and write the `.mim` index for the given `gzip_file`.
 ///
 /// The output location defaults to `<gzip_file>.mim`.
 pub fn build_mim_index(
