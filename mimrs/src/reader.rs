@@ -63,11 +63,10 @@ impl MimReader {
     }
 
     /// A reader of the record-aligned byte range of this worker.
-    pub fn readers(&self) -> impl Iterator<Item = Result<GzipStreamReader>> {
-        (0..self.num_workers).map(|worker_id| self.get_reader(worker_id))
-    }
-
-    /// A reader of the record-aligned byte range of this worker.
+    ///
+    /// This should be called inside the spawned worker thread, so that
+    /// initialization such as seeking to the start of the first record is done
+    /// in parallel.
     pub fn get_reader(&self, worker_id: usize) -> Result<GzipStreamReader> {
         if worker_id >= self.num_workers {
             anyhow::bail!(
@@ -82,6 +81,17 @@ impl MimReader {
             &self.index,
             (&self.chunk_assignments)[worker_id].clone(),
         )?)
+    }
+
+    /// A [`paraseq::fastx::Reader`] over the records of this worker.
+    ///
+    /// Convenience wrapper around [`Self::get_reader`].
+    #[cfg(feature = "paraseq")]
+    pub fn get_paraseq_reader<'a>(
+        &'a self,
+        worker_id: usize,
+    ) -> Result<paraseq::fastx::Reader<GzipStreamReader>> {
+        Ok(paraseq::fastx::Reader::new(self.get_reader(worker_id)?)?)
     }
 
     /// A [`needletail::FastxReader`] over the records of this worker.

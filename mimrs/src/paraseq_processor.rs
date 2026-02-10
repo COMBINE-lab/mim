@@ -30,10 +30,11 @@ impl ParallelReader for MimReader {
         thread::scope(|scope| -> paraseq::parallel::Result<()> {
             // Spawn worker threads
             let mut handles = Vec::new();
-            for (thread_id, reader) in self.readers().enumerate() {
+            for thread_id in 0..num_threads {
                 let mut worker_processor = processor.clone();
+                let mim_reader = &self;
                 let handle = scope.spawn(move || -> paraseq::parallel::Result<()> {
-                    let mut reader = fastx::Reader::new(reader.unwrap()).unwrap();
+                    let mut reader = mim_reader.get_paraseq_reader(thread_id).unwrap();
                     let mut record_set = reader.new_record_set();
 
                     worker_processor.set_thread_id(thread_id);

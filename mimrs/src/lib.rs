@@ -5,35 +5,51 @@
 //! to start anywhere within the file.
 //! Additionally, we make this FASTA/FASTQ aware by storing the index and offset of the first record after each checkpoint.
 //!
-//! ## API
-//!
 //! ### Building the index
 //!
 //! Given a `records.fastq.gz`, build the index using [`build_mim_index`].:
 //! ```
+//! use std::path::Path;
 //! // Make checkpoints every 32 MiB.
 //! let chunk_size = 32 * 1024 * 1024;
 //! // Optional additional metadata to include.
 //! let metadata: Option<serde_json::Value> = None;
-//! mim::build_mim_index(PathBuf::new("records.fastq.gz"), chunk_size, metadata, PathBuf::new("records.fastq.gz.mim"));
+//! mim::build_mim_index(Path::new("records.fastq.gz"), chunk_size, metadata, Some(Path::new("records.fastq.gz.mim")));
 //! ```
 //!
 //! ### Using the index
 //!
-//! The main entrypoint for using the index is [`mim_reader`]:
-//! ```
-//! use mim::MimReader;
+//! The main entrypoint for using the index is [`mim_reader`], followed by calling [`MimReader::get_reader`] inside each thread.
+//! ```no_run
+//! // Count the total length of the records in records.fastq.gz using 8 threads.
+//! let gz_path = std::path::Path::new("records.fastq.gz");
 //! let num_workers = 8;
-//! // Requires `reords.fastq.gz.mim` to exist.
-//! let reader: MimReader = mim::mim_reader(PathBuf::new("records.fastq.gz"), num_workers);
+//! // Requires `records.fastq.gz.mim` to exist.
+//! let mim_reader: &mim::MimReader = &mim::mim_reader(&gz_path, num_workers);
+//!
+//! let total_bytes = std::sync::atomic::AtomicUsize::new(0);
 //! std::thread::scope(|s| {
-//!     for reader in reader.readers() {
-//!         let reader = reader.unwrap();
-//!         s.spawn(|| {
-//!             // Do something with the reader, e.g. read records from it.
+//!     for i in 0..num_workers {
+//!         let total_bytes = &total_bytes;
+//!         s.spawn(move || {
+//!             // Pass the `reader` over bytes to needletail for parsing.
+//!             let reader = mim_reader.get_reader(i).unwrap();
+//!             let mut parser = needletail::parse_fastx_reader(reader).unwrap();
+//!
+//!             // Alternatively, for thread i:
+//!             // let mut parser = mim_reader.get_needletail_parser(i).unwrap();
+//!
+//!             // Count bytes.
+//!             let mut num_bytes = 0;
+//!             while let Some(record) = parser.next() {
+//!                 let record = record.unwrap();
+//!                 num_bytes += record.seq().len();
+//!             }
+//!             total_bytes.fetch_add(num_bytes, std::sync::atomic::Ordering::Relaxed);
 //!         });
 //!     }
 //! });
+//! eprintln!("Total bytes: {}", total_bytes.into_inner());
 //! ```
 //!
 //! With the `needletail` feature flag, these convenience functions are provided:
@@ -42,14 +58,16 @@
 //!
 //! With the `paraseq` feature flag, [`MimReader`] implements [`paraseq::prelude::ParallelReader`] for use with [`paraseq::prelude::ParallelProcessor`].
 //!
-//! ### [`MultiMimReader`]
+//! ### Paired-end and multiple files
 //!
 //! Paired-end and synchronous multi-file processing is provided by [`MultiMimReader`].
-//! This takes multiple `.gz` files, and returns readers that work in lock-step:
+//! This takes multiple `.gz` files and needs a `.mim` for each, and returns readers that work in lock-step:
 //! the first file is split into `num_workers` roughly equally sized chunks,
 //! and the corresponding starting records are found in each of the other files.
 //!
-//! ## CLI
+//! ### CLI
+//!
+//! See the github readme for details.
 //!
 //! - `mim index` builds the `.mim` index.
 //! - `mim unzip` unzips a `.gz` file using the `.mim` index.

@@ -383,9 +383,7 @@ fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
     if let Some(parts) = args.parts {
         // One thread per output part.
         let mim_parser =
-            MimReader::new_with_opt_index(&args.gz_path, args.index_path.as_deref(), parts);
-        let readers = mim_parser.readers();
-
+            &MimReader::new_with_opt_index(&args.gz_path, args.index_path.as_deref(), parts);
         let output = args
             .output
             .clone()
@@ -395,13 +393,14 @@ fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
             false => {
                 // Write one part per thread.
                 std::thread::scope(|s| {
-                    for (i, reader) in readers.enumerate() {
+                    for i in 0..parts {
                         let output = output.with_added_extension(format!("{i}"));
                         s.spawn(move || {
+                            let mut reader = mim_parser.get_reader(i).expect("valid reader");
                             let writer =
                                 std::fs::File::create(output).expect("could not create output");
                             let mut bufwriter = std::io::BufWriter::with_capacity(BUF_SIZE, writer);
-                            std::io::copy(&mut reader.expect("valid reader"), &mut bufwriter)
+                            std::io::copy(&mut reader, &mut bufwriter)
                                 .expect("failed to write output");
                         });
                     }
@@ -426,12 +425,14 @@ fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
 
                 // Fork one process per part.
                 std::thread::scope(|s| {
-                    for (i, reader) in readers.enumerate() {
+                    for i in 0..parts {
                         let output = output.with_added_extension(format!("{i}"));
                         s.spawn(move || {
                             debug!("{i}: started");
                             // child process
                             debug!("{i}: {output:?}");
+
+                            let reader = mim_parser.get_reader(i);
 
                             // Drop the output pipe, even on panics.
                             struct DropPipe(usize, PathBuf);
@@ -479,8 +480,7 @@ fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
         // Single output file; all threads cooperate.
         let threads = args.threads.unwrap_or_else(|| num_cpus::get());
         let mim_parser =
-            MimReader::new_with_opt_index(&args.gz_path, args.index_path.as_deref(), threads);
-        let readers = mim_parser.readers();
+            &MimReader::new_with_opt_index(&args.gz_path, args.index_path.as_deref(), threads);
 
         let output = args
             .output
@@ -489,9 +489,9 @@ fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
         let file = &std::fs::File::create(&output).expect("could not create output");
 
         std::thread::scope(|s| {
-            for reader in readers {
+            for i in 0..threads {
                 s.spawn(move || -> anyhow::Result<()> {
-                    let reader = reader.expect("valid reader");
+                    let reader = mim_parser.get_reader(i).expect("valid reader");
                     let mut pos = reader.output_range().start;
                     let mut bufreader = std::io::BufReader::with_capacity(BUF_SIZE, reader);
                     while let buf = bufreader.fill_buf()?
