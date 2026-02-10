@@ -198,7 +198,6 @@ fn deflate_index_build<R: BufRead>(
         state.zstrm.strm.avail_in = input_buf.len() as u32;
 
         // At the start, set the decompression mode.
-        // FIXME: Can the mode change between gzip members?
         if state.file_mode == DecompressionMode::NONE {
             // Detect file mode based on the first magic bytes.
             state.file_mode = match input_buf[0] {
@@ -230,8 +229,6 @@ fn deflate_index_build<R: BufRead>(
 
                 if at_deflate_stream_end {
                     // If the last loop reached end-of-stream and there is more data, start a new member.
-                    // FIXME: Does `reset_inflate` touch `avail_in`?
-                    // TODO: Move back to end of the loop?
                     handle_gzip_member_boundary(&mut state)?;
                 }
 
@@ -335,7 +332,6 @@ fn deflate_index_build<R: BufRead>(
         next_record_pos: state.out_pos as u64,
     });
 
-    // FIXME: We probably have a memory leak now when this is not called on early aborts.
     state.zstrm.end()?;
 
     // Finalize hash
