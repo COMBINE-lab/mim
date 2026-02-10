@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand};
 use lender::prelude::*;
 use mim::gzip_reader::GzipStreamReader;
 use mim::types::MimIndex;
-use mim::{MimReader, MultiPairParser, ReadIter};
+use mim::{MimReader, MultiMimReader, ReadIter};
 use std::ffi::CString;
 use std::os::unix::fs::FileExt;
 use std::sync::Arc;
@@ -124,44 +124,48 @@ struct Cli {
 }
 
 fn launch_paired_parser(args: &NucHistCommand) -> anyhow::Result<()> {
-    let mp = Arc::new(MultiPairParser::new_with_workers(
+    let mp = MultiMimReader::new_with_workers(
         &args.fastq_paths,
         args.index_paths.as_ref().expect("valid at this point"),
         args.nthreads,
-    )?);
+    )?;
 
     let start = std::time::Instant::now();
 
-    let mut threads = Vec::<JoinHandle<Vec<usize>>>::with_capacity(args.nthreads);
-
-    for t in 0..args.nthreads {
-        let mp = mp.clone();
-        threads.push(std::thread::spawn(move || {
-            let (mut wp1, mut wp2) = mp
-                .get_needletail_parsers_for_worker(t)
-                .expect("could get parsers");
-            let mut nucs = vec![0_usize; 4];
-            while let (Some(rec), Some(rec2)) = (wp1.next(), wp2.next()) {
-                let record = rec.expect("valid record");
-                record.seq().iter().for_each(|c| {
-                    nucs[((*c as usize) >> 1) & 3] += 1;
-                });
-                let record = rec2.expect("valid record");
-                record.seq().iter().for_each(|c| {
-                    nucs[((*c as usize) >> 1) & 3] += 1;
-                });
-            }
-            nucs
-        }));
-    }
-
     let mut nuc_hist = [0_usize; 4];
-    for t in threads {
-        let loc_nuc = t.join().expect("valid join");
-        for (i, c) in loc_nuc.iter().enumerate() {
-            nuc_hist[i] += c;
+    std::thread::scope(|scope| {
+        let mut handles = vec![];
+
+        let parsers = mp.get_needletail_parsers();
+        for parsers in parsers {
+            let mut parsers = parsers.expect("valid parsers");
+            let handle = scope.spawn(move || -> [usize; 4] {
+                let [wp1, wp2] = parsers.as_mut_slice() else {
+                    panic!();
+                };
+                let mut nucs = [0_usize; 4];
+                while let (Some(rec), Some(rec2)) = (wp1.next(), wp2.next()) {
+                    let record = rec.expect("valid record");
+                    record.seq().iter().for_each(|c| {
+                        nucs[((*c as usize) >> 1) & 3] += 1;
+                    });
+                    let record = rec2.expect("valid record");
+                    record.seq().iter().for_each(|c| {
+                        nucs[((*c as usize) >> 1) & 3] += 1;
+                    });
+                }
+                nucs
+            });
+            handles.push(handle);
         }
-    }
+
+        for handle in handles {
+            let loc_nuc = handle.join().expect("valid join");
+            for (i, c) in loc_nuc.iter().enumerate() {
+                nuc_hist[i] += c;
+            }
+        }
+    });
 
     eprintln!(
         "A: {}, C: {}, G: {}, T (or N): {}",
@@ -187,7 +191,7 @@ fn launch_single_parser(args: &NucHistCommand) -> anyhow::Result<()> {
     for t in 0..args.nthreads {
         let mp = mp.clone();
         threads.push(std::thread::spawn(move || {
-            let mut wi = mp.get_needletail_reader(t).expect("can get worker");
+            let mut wi = mp.get_needletail_parser(t).expect("can get worker");
             let mut nucs = vec![0_usize; 4];
             while let Some(rec) = wi.next() {
                 let record = rec.expect("valid record");

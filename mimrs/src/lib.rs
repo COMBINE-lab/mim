@@ -8,4 +8,4 @@ pub mod gzip_reader;
 pub mod types;
 
 pub use indexer::build_mim_index;
-pub use reader::{MimReader, MultiPairParser, ReadIter};
+pub use reader::{MimReader, MultiMimReader, ReadIter};

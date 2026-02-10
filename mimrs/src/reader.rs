@@ -1,4 +1,3 @@
-//! FIXME: Split work by chunk-size, not just by chunk-count.
 use crate::gzip_reader::GzipStreamReader;
 use crate::types::MimIndex;
 use anyhow::Result;
@@ -13,7 +12,7 @@ pub struct MimReader {
     /// The index itself.
     pub index: MimIndex,
     /// The number of worker threads.
-    pub nworker: usize,
+    pub num_workers: usize,
     /// The range of chunks assigned to each worker.
     pub chunk_assignments: Vec<Range<usize>>,
 }
@@ -41,7 +40,7 @@ impl MimReader {
     pub fn new_with_index(gz_path: &Path, index_path: &Path, num_workers: usize) -> Self {
         let index = MimIndex::read(&index_path).expect("failed to load index");
         Self {
-            nworker: num_workers,
+            num_workers,
             input_path: gz_path.to_owned(),
             chunk_assignments: index.distribute_chunks(num_workers),
             index,
@@ -50,16 +49,16 @@ impl MimReader {
 
     /// A reader of the record-aligned byte range of this worker.
     pub fn readers(&self) -> impl Iterator<Item = Result<GzipStreamReader>> {
-        (0..self.nworker).map(|worker_id| self.get_reader(worker_id))
+        (0..self.num_workers).map(|worker_id| self.get_reader(worker_id))
     }
 
     /// A reader of the record-aligned byte range of this worker.
     pub fn get_reader(&self, worker_id: usize) -> Result<GzipStreamReader> {
-        if worker_id >= self.nworker {
+        if worker_id >= self.num_workers {
             anyhow::bail!(
                 "Requested work for worker {}, but only {} workers were registered.",
                 worker_id,
-                self.nworker
+                self.num_workers
             )
         }
 
@@ -74,7 +73,7 @@ impl MimReader {
     ///
     /// Convenience wrapper around [`Self::get_reader`].
     #[cfg(feature = "needletail")]
-    pub fn get_needletail_reader<'a>(
+    pub fn get_needletail_parser<'a>(
         &'a self,
         worker_id: usize,
     ) -> Result<Box<dyn needletail::FastxReader + 'a>, needletail::errors::ParseError> {
@@ -86,7 +85,7 @@ impl MimReader {
 
     /// An iterator over the [`needletail::parser::SequenceRecord`] records records of this worker.
     ///
-    /// Convenience wrapper around [`Self::get_reader`] and [`Self::get_needletail_reader`].
+    /// Convenience wrapper around [`Self::get_reader`] and [`Self::get_needletail_parser`].
     #[cfg(feature = "needletail")]
     pub fn get_needletail_iter<'a>(&'a self, worker_id: usize) -> Result<ReadIter<'a>> {
         let stream = self.get_reader(worker_id)?;
@@ -96,26 +95,31 @@ impl MimReader {
     }
 }
 
-pub struct MultiPairParser {
-    pub nworker: usize,
-    pub fpaths: Vec<PathBuf>,
-    pub ipaths: Vec<PathBuf>,
-    /// chunk assignments are with respect to read1 files
-    pub chunk_assignments: Vec<Range<usize>>,
+/// Synchronous multithreaded parsing of multiple files.
+#[cfg(feature = "needletail")]
+pub struct MultiMimReader {
+    /// .gz input files.
+    pub input_paths: Vec<PathBuf>,
+    /// The index itself.
     pub indexes: Vec<MimIndex>,
+    /// The number of worker threads.
+    pub num_workers: usize,
+    /// The range of chunks assigned to each worker.
+    /// Split is on the first input file.
+    pub chunk_assignments: Vec<Range<usize>>,
 }
 
-impl MultiPairParser {
+#[cfg(feature = "needletail")]
+impl MultiMimReader {
     pub fn new_with_workers<P: AsRef<Path>>(
-        fpaths: &[P],
-        ipaths: &[P],
-        nworker: usize,
+        gz_paths: &[P],
+        index_paths: &[P],
+        num_workers: usize,
     ) -> anyhow::Result<Self> {
-        // for now, we only handle a single pair of reads
-        assert_eq!(fpaths.len(), 2);
-        assert_eq!(ipaths.len(), 2);
+        assert_eq!(gz_paths.len(), index_paths.len());
+        assert!(!gz_paths.is_empty());
 
-        let indexes: Vec<MimIndex> = ipaths
+        let indexes: Vec<MimIndex> = index_paths
             .iter()
             .map(|path| MimIndex::read(path.as_ref()).expect("failed to load index"))
             .collect();
@@ -124,84 +128,56 @@ impl MultiPairParser {
         let chunk_assignments = indexes
             .first()
             .expect("at least two indexes")
-            .distribute_chunks(nworker);
+            .distribute_chunks(num_workers);
 
         Ok(Self {
-            nworker,
-            fpaths: fpaths
-                .iter()
-                .map(|f| PathBuf::from(f.as_ref()))
-                .collect::<Vec<PathBuf>>(),
-            ipaths: ipaths
-                .iter()
-                .map(|f| PathBuf::from(f.as_ref()))
-                .collect::<Vec<PathBuf>>(),
+            num_workers,
+            input_paths: gz_paths.iter().map(|f| f.as_ref().to_owned()).collect(),
             chunk_assignments,
             indexes,
         })
     }
 
-    #[cfg(feature = "needletail")]
-    pub fn get_needletail_parsers_for_worker<'a>(
+    pub fn get_needletail_parsers<'a>(
         &'a self,
-        worker_id: usize,
-    ) -> anyhow::Result<(
-        Box<dyn needletail::FastxReader + 'a>,
-        Box<dyn needletail::FastxReader + 'a>,
-    )> {
-        use std::io::Read;
-        if worker_id < self.nworker {
-            let gzfq = GzipStreamReader::read_range(
-                &self.fpaths[0],
+    ) -> impl Iterator<Item = anyhow::Result<Vec<Box<dyn needletail::FastxReader + 'a>>>> {
+        (0..self.num_workers).map(|worker_id| {
+            let reader0 = GzipStreamReader::read_range(
+                &self.input_paths[0],
                 &self.indexes[0],
                 (&self.chunk_assignments)[worker_id].clone(),
             )?;
-            let first_record_rank = gzfq.record_idx_range().start;
-            // now sync the second file up with the first
-            // find the chunk we jump to in file 2
-            let mut second_file_chunk = self.indexes[1]
-                .record_boundaries
-                .partition_point(|x| x.next_record_idx < first_record_rank);
-            if self.indexes[1].record_boundaries[second_file_chunk].next_record_idx
-                > first_record_rank
-            {
-                second_file_chunk = 0_i64.max(second_file_chunk as i64 - 1) as usize;
-            }
-            // and the record rank starting this chunk
-            let second_record_rank =
-                self.indexes[1].record_boundaries[second_file_chunk].next_record_idx;
+            let first_record_rank = reader0.record_idx_range().start;
 
-            let mut gzfq2 = GzipStreamReader::read_from_checkpoint(
-                &self.fpaths[1],
-                &self.indexes[1],
-                second_file_chunk,
-            )?;
-            // skip the byte sup to the first record
-            let record_offset =
-                self.indexes[1].record_boundaries[second_file_chunk].next_record_pos;
-            if record_offset > gzfq2.out_pos() {
-                // discard the requisite number of bytes
-                let mut discard_buf = vec![0_u8; (record_offset - gzfq2.out_pos()) as usize];
-                gzfq2.read_exact(&mut discard_buf)?;
-            }
+            let mut parsers = Vec::with_capacity(self.input_paths.len());
+            let parser0 = needletail::parse_fastx_reader(reader0).expect("invalid reader");
+            parsers.push(parser0);
 
-            let r1 = needletail::parse_fastx_reader(gzfq)?;
-            let mut r2 = needletail::parse_fastx_reader(gzfq2)?;
+            for i in 1..self.input_paths.len() {
+                // Synchronize files.
+                // Fine the last chunk with start <= first_record_rank.
+                let checkpoint = self.indexes[i]
+                    .record_boundaries
+                    .partition_point(|x| x.next_record_idx <= first_record_rank)
+                    - 1;
+                // and the record rank starting this chunk
+                let checkpoint_rank = self.indexes[i].record_boundaries[checkpoint].next_record_idx;
+                let skip = first_record_rank - checkpoint_rank;
 
-            // skip the reads to sync up with reader 1
-            let reads_to_skip = first_record_rank - second_record_rank;
-            for _ in 0..reads_to_skip {
-                let _ = r2.next();
+                let reader_i = GzipStreamReader::read_from_checkpoint(
+                    &self.input_paths[i],
+                    &self.indexes[i],
+                    checkpoint,
+                )?;
+                let mut parser_i = needletail::parse_fastx_reader(reader_i)?;
+                for _ in 0..skip {
+                    let _ = parser_i.next();
+                }
+                parsers.push(parser_i);
             }
 
-            Ok((r1, r2))
-        } else {
-            anyhow::bail!(
-                "Requested work for worker {}, but only {} workers were registered.",
-                worker_id,
-                self.nworker
-            )
-        }
+            Ok(parsers)
+        })
     }
 }
 

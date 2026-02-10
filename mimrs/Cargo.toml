@@ -31,7 +31,7 @@ paraseq = { version = "0.4.3", optional = true }
 debug = true
 
 [features]
-# For MimReader::{get_needletail_reader,get_needletail_iter}
+# For MimReader::{get_needletail_parser,get_needletail_iter}
 needletail = ["dep:needletail"]
 # For using MimReader as paraseq::ParallelReader.
 paraseq = ["dep:paraseq"]
