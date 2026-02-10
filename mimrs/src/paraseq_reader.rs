@@ -1,171 +1,100 @@
 #![allow(unused_variables)]
-use std::{
-    path::{Path, PathBuf},
-    thread,
-};
-
-use crate::indexer::{IndexError, build_mim_index};
+use std::thread;
 
 use super::reader::MimReader;
 
 use paraseq::{
+    Result,
     fastx::{self, GenericReader},
-    prelude::{ParallelProcessor, ParallelReader},
+    prelude::ParallelReader,
 };
 
 use paraseq::parallel::ProcessError;
 
-pub struct ParallelMimReader {
-    file: PathBuf,
-    index: PathBuf,
-}
-
-impl ParallelMimReader {
-    /// Assume the mim index is simply at `<path>.mim`.
-    pub fn new(path: &Path) -> Self {
-        ParallelMimReader {
-            file: path.to_owned(),
-            index: path.to_owned().with_added_extension("mim"),
-        }
-    }
-    pub fn build_if_missing(path: &Path) -> Result<Self, IndexError> {
-        let index = path.to_owned().with_added_extension("mim");
-
-        if !index.exists() {
-            build_mim_index(path, 32_000_000, None, Some(&index))?;
-        }
-
-        Ok(ParallelMimReader {
-            file: path.to_owned(),
-            index,
-        })
-    }
-    pub fn new_with_index(path: &Path, index: &Path) -> Self {
-        ParallelMimReader {
-            file: path.to_owned(),
-            index: index.to_owned(),
-        }
-    }
-}
-
-impl ParallelReader for ParallelMimReader {
+impl ParallelReader for MimReader {
     type Rf<'a> = paraseq::fastx::RefRecord<'a>;
 
-    fn process_parallel<T>(self, processor: &mut T, num_threads: usize) -> paraseq::Result<()>
+    fn process_parallel<T>(self, processor: &mut T, num_threads: usize) -> Result<()>
     where
         T: for<'a> paraseq::prelude::ParallelProcessor<Self::Rf<'a>>,
     {
-        let multi_parser = MimReader::new_with_index(&self.file, &self.index, num_threads);
-        let mut readers: Vec<fastx::Reader<_>> = (0..num_threads)
-            .map(|id| {
-                let stream = multi_parser.get_reader(id).unwrap();
-                fastx::Reader::new(stream).unwrap()
-            })
-            .collect();
-        process_truly_parallel(&mut readers, processor)
+        assert!(
+            num_threads == self.nworker,
+            "Number of threads ({}) must match the number of workers ({}) in the MimReader.",
+            num_threads,
+            self.nworker
+        );
+        thread::scope(|scope| -> paraseq::parallel::Result<()> {
+            // Spawn worker threads
+            let mut handles = Vec::new();
+            for (thread_id, reader) in self.readers().enumerate() {
+                let mut worker_processor = processor.clone();
+                let handle = scope.spawn(move || -> paraseq::parallel::Result<()> {
+                    let mut reader = fastx::Reader::new(reader.unwrap()).unwrap();
+                    let mut record_set = reader.new_record_set();
+
+                    worker_processor.set_thread_id(thread_id);
+
+                    loop {
+                        let s1 = reader.fill(&mut record_set);
+
+                        if !s1? {
+                            break;
+                        }
+
+                        let records = fastx::RecordSet::iter(&record_set);
+
+                        for record in records {
+                            worker_processor.process_record(record?)?;
+                        }
+
+                        worker_processor.on_batch_complete()?;
+                    }
+                    worker_processor.on_thread_complete()?;
+                    Ok(())
+                });
+
+                handles.push(handle);
+            }
+
+            // Wait for worker threads
+            for handle in handles {
+                match handle.join() {
+                    Ok(Ok(())) => (),
+                    Ok(Err(e)) => return Err(e),
+                    Err(_) => return Err(ProcessError::JoinError),
+                }
+            }
+
+            Ok(())
+        })?;
+
+        Ok(())
     }
 
-    fn process_parallel_paired<T>(
-        self,
-        r2: Self,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> paraseq::Result<()>
+    fn process_parallel_paired<T>(self, _: Self, _: &mut T, _: usize) -> Result<()>
     where
         T: for<'a> paraseq::prelude::PairedParallelProcessor<Self::Rf<'a>>,
     {
         todo!()
     }
-
-    fn process_parallel_interleaved<T>(
-        self,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> paraseq::Result<()>
+    fn process_parallel_interleaved<T>(self, _: &mut T, _: usize) -> Result<()>
     where
         T: for<'a> paraseq::prelude::PairedParallelProcessor<Self::Rf<'a>>,
     {
         todo!()
     }
-
-    fn process_parallel_multi<T>(
-        self,
-        rest: Vec<Self>,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> paraseq::Result<()>
+    fn process_parallel_multi<T>(self, _: Vec<Self>, _: &mut T, _: usize) -> Result<()>
     where
         T: for<'a> paraseq::prelude::MultiParallelProcessor<Self::Rf<'a>>,
         Self: Sized,
     {
         todo!()
     }
-
-    fn process_parallel_multi_interleaved<T>(
-        self,
-        arity: usize,
-        processor: &mut T,
-        num_threads: usize,
-    ) -> paraseq::Result<()>
+    fn process_parallel_multi_interleaved<T>(self, _: usize, _: &mut T, _: usize) -> Result<()>
     where
         T: for<'a> paraseq::prelude::MultiParallelProcessor<Self::Rf<'a>>,
     {
         todo!()
     }
-}
-
-fn process_truly_parallel<S, T>(
-    readers: &mut [S],
-    processor: &mut T,
-) -> paraseq::parallel::Result<()>
-where
-    T: for<'a> ParallelProcessor<S::RefRecord<'a>>,
-    for<'a> <S as GenericReader>::RefRecord<'a>: paraseq::Record,
-    S: GenericReader<Error: Into<ProcessError>> + Send,
-{
-    thread::scope(|scope| -> paraseq::parallel::Result<()> {
-        // Spawn worker threads
-        let mut handles = Vec::new();
-        for (thread_id, reader) in readers.iter_mut().enumerate() {
-            let mut worker_processor = processor.clone();
-            let mut record_set = reader.new_record_set();
-
-            let handle = scope.spawn(move || -> paraseq::parallel::Result<()> {
-                worker_processor.set_thread_id(thread_id);
-
-                loop {
-                    let s1 = reader.fill(&mut record_set);
-
-                    if !s1.map_err(Into::into)? {
-                        break;
-                    }
-
-                    let records = S::iter(&record_set);
-
-                    for record in records {
-                        worker_processor.process_record(record.map_err(Into::into)?)?;
-                    }
-
-                    worker_processor.on_batch_complete()?;
-                }
-                worker_processor.on_thread_complete()?;
-                Ok(())
-            });
-
-            handles.push(handle);
-        }
-
-        // Wait for worker threads
-        for handle in handles {
-            match handle.join() {
-                Ok(Ok(())) => (),
-                Ok(Err(e)) => return Err(e),
-                Err(_) => return Err(ProcessError::JoinError),
-            }
-        }
-
-        Ok(())
-    })?;
-
-    Ok(())
 }

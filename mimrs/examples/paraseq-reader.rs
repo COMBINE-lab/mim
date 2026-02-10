@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use clap::Parser;
-use mim::paraseq_reader::ParallelMimReader;
+use mim::MimReader;
 use paraseq::parallel::ParallelReader;
 use paraseq::prelude::*;
 use parking_lot::Mutex;
@@ -49,7 +49,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     let args = Cli::parse();
-    let reader = ParallelMimReader::new(&args.input_file);
+    let reader = MimReader::new(&args.input_file, args.num_threads);
 
     let counts = Mutex::new([0; 4]);
     let mut proc = Processor::new(&counts);

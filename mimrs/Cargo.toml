@@ -14,7 +14,6 @@ libc = { version = "0.2.177", features = ["use_std"] }
 libz-rs-sys = "0.5.3"
 path-tools = "0.1.0"
 serde = { version = "1.0.228", features = ["derive"] }
-paraseq = "0.4.3"
 serde_cbor = "0.11"
 serde_json = { version = "1.0.145", features = ["indexmap", "preserve_order"] }
 tracing = "0.1.43"
@@ -26,13 +25,18 @@ num_cpus = "1.17.0"
 ctrlc = "3.5.1"
 
 needletail = { version = "0.6.3", optional = true }
+paraseq = { version = "0.4.3", optional = true }
 
 [profile.release]
 debug = true
 
 [features]
+# For MimReader::{get_needletail_reader,get_needletail_iter}
 needletail = ["dep:needletail"]
-default = ["needletail"]
+# For using MimReader as paraseq::ParallelReader.
+paraseq = ["dep:paraseq"]
+
+default = ["needletail", "paraseq"]
 
 [[bin]]
 name = "mim"
