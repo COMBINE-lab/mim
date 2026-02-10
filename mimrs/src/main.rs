@@ -13,6 +13,9 @@ use std::io::{BufRead, Read};
 use std::path::PathBuf;
 use std::thread::JoinHandle;
 
+/// Size of input and output buffer for file IO.
+const BUF_SIZE: usize = 256 * 1024;
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Build the .mim index.
@@ -347,9 +350,10 @@ fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
                     for (i, reader) in readers.enumerate() {
                         let output = output.with_added_extension(format!("{i}"));
                         s.spawn(move || {
-                            let mut writer =
+                            let writer =
                                 std::fs::File::create(output).expect("could not create output");
-                            std::io::copy(&mut reader.expect("valid reader"), &mut writer)
+                            let mut bufwriter = std::io::BufWriter::with_capacity(BUF_SIZE, writer);
+                            std::io::copy(&mut reader.expect("valid reader"), &mut bufwriter)
                                 .expect("failed to write output");
                         });
                     }
@@ -410,10 +414,11 @@ fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
 
                             debug!("{i}: opening file for writing..");
                             // Things hangs until someone opens the pipe for reading.
-                            let mut writer =
+                            let writer =
                                 std::fs::File::create(&output).expect("could not create output");
+                            let mut bufwriter = std::io::BufWriter::with_capacity(BUF_SIZE, writer);
                             debug!("{i}: writing to pipe..");
-                            std::io::copy(&mut reader.expect("valid reader"), &mut writer)
+                            std::io::copy(&mut reader.expect("valid reader"), &mut bufwriter)
                                 .expect("failed to write output");
 
                             debug!("{i}: end of thread");
@@ -440,7 +445,7 @@ fn unzip(args: &UnzipCommand) -> anyhow::Result<()> {
                 s.spawn(move || -> anyhow::Result<()> {
                     let reader = reader.expect("valid reader");
                     let mut pos = reader.output_range().start;
-                    let mut bufreader = std::io::BufReader::with_capacity(256 * 1024, reader);
+                    let mut bufreader = std::io::BufReader::with_capacity(BUF_SIZE, reader);
                     while let buf = bufreader.fill_buf()?
                         && !buf.is_empty()
                     {

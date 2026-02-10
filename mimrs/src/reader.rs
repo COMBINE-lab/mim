@@ -3,6 +3,7 @@ use crate::types::MimIndex;
 use anyhow::Result;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use tracing::debug;
 
 /// Type managing multithreaded parsing of a .gz file with a .mim index.
 // TODO: Parser? Reader?

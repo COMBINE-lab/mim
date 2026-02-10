@@ -38,6 +38,7 @@ mimrs/target/*
 test-data
 *gzip*
 *index*
+!mimrs/src/gzip_reader.rs
 !mimrs/src/indexer.rs
 !include/zran_index_helpers.hpp
 !mimrs/src/indexer.rs
