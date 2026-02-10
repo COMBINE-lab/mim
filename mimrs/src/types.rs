@@ -7,11 +7,11 @@ use std::{
 };
 
 /// Magic file signature constant that is written at the start of each .mim file.
-/// https://en.wikipedia.org/wiki/List_of_file_signatures
-pub(crate) const MIMINDEX_FILE_CONSTANT: &[u8; 8] = b"MIMINDEX";
+/// <https://en.wikipedia.org/wiki/List_of_file_signatures>
+pub const MIMINDEX_FILE_CONSTANT: &[u8; 8] = b"MIMINDEX";
 
 /// Wrapper type for Blake3Hash.
-pub(crate) type Blake3Hash = [u8; 32];
+pub type Blake3Hash = [u8; 32];
 
 /// Checkpoint storing information about an arbitrary position in a .gz file.
 /// Contains the preceding 32KiB window to enable decompression, as well as
@@ -37,6 +37,7 @@ pub struct RecordCheckpoint {
     pub next_record_pos: u64,
 }
 
+/// The mode of the file. RAW for DEFLATE stream, or GZIP or ZLIB header.
 #[derive(Default, bincode::Encode, bincode::Decode, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum DecompressionMode {
     #[default]
@@ -46,23 +47,26 @@ pub enum DecompressionMode {
     GZIP = 31,
 }
 
-/// Deflate index structure
+/// The on-disk .mim data containing file metadata and checkpoints.
 #[derive(bincode::Encode, bincode::Decode)]
 pub struct MimIndex {
     /// The version of the index.
     // TODO: Major/Minor/Patch versions?
     // Maybe 10000 * major + 100 * minor + patch?
     pub version: u64,
+
+    /// Whether the file is gzip, zlib, or raw DEFLATE.
+    pub mode: DecompressionMode,
+    /// Blake3 hash of the .gz file.
+    pub input_hash: Blake3Hash,
+
     /// CBOR serialized json string.
     pub metadata: Vec<u8>, // CBOR blob (deserialized)
+
     /// Total size in bytes of the decompressed gzip data.
-    pub plain_size: i64,
+    pub output_size: i64,
     /// Total number of records.
     pub total_num_records: i64,
-    /// Blake3 hash of the plain decompressed data.
-    pub plain_hash: Blake3Hash,
-
-    pub mode: DecompressionMode,
 
     /// The decompression checkpoints. Most of the size is here.
     pub checkpoints: Vec<DeflateCheckPoint>,
@@ -98,7 +102,7 @@ impl MimIndex {
     // TODO: This could possibly be optimized slightly by minimizing the length of the maximum chunk.
     //       Or, we could take into account the length of the decompressed data as well.
     pub fn distribute_chunks(&self, num_workers: usize) -> Vec<Range<usize>> {
-        let total_bytes = self.plain_size as usize;
+        let total_bytes = self.output_size as usize;
         let target_size = total_bytes.div_ceil(num_workers);
         // For each worker, take the first chunk where it overshoots the target bytes.
         let mut ranges = Vec::with_capacity(num_workers);

@@ -1,8 +1,10 @@
 pub mod gzip_reader;
-pub mod indexer;
-pub mod mim_reader;
-pub mod mim_types;
-pub mod paraseq_reader;
-pub mod record_counter;
+mod indexer;
+mod record_counter;
 
-pub use mim_reader::MimReader;
+pub mod paraseq_reader;
+mod reader;
+pub mod types;
+
+pub use indexer::build_mim_index;
+pub use reader::{MimReader, MultiPairParser, ReadIter};

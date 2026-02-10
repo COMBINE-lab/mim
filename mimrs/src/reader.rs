@@ -1,6 +1,6 @@
 //! FIXME: Split work by chunk-size, not just by chunk-count.
 use crate::gzip_reader::GzipStreamReader;
-use crate::mim_types::MimIndex;
+use crate::types::MimIndex;
 use anyhow::Result;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -16,15 +16,6 @@ pub struct MimReader {
     pub nworker: usize,
     /// The range of chunks assigned to each worker.
     pub chunk_assignments: Vec<Range<usize>>,
-}
-
-pub struct MultiPairParser {
-    pub nworker: usize,
-    pub fpaths: Vec<PathBuf>,
-    pub ipaths: Vec<PathBuf>,
-    /// chunk assignments are with respect to read1 files
-    pub chunk_assignments: Vec<Range<usize>>,
-    pub indexes: Vec<MimIndex>,
 }
 
 impl MimReader {
@@ -81,7 +72,7 @@ impl MimReader {
 
     /// A [`needletail::FastxReader`] over the records of this worker.
     ///
-    /// Convenience wrapper around [`Self::get_worker_stream`].
+    /// Convenience wrapper around [`Self::get_reader`].
     #[cfg(feature = "needletail")]
     pub fn get_needletail_reader<'a>(
         &'a self,
@@ -93,9 +84,9 @@ impl MimReader {
         )
     }
 
-    /// An iterator over the [`needletail::SequenceRecord`] records records of this worker.
+    /// An iterator over the [`needletail::parser::SequenceRecord`] records records of this worker.
     ///
-    /// Convenience wrapper around [`Self::get_worker_stream`] and [`Self::get_worker_needletail_reader`].
+    /// Convenience wrapper around [`Self::get_reader`] and [`Self::get_needletail_reader`].
     #[cfg(feature = "needletail")]
     pub fn get_needletail_iter<'a>(&'a self, worker_id: usize) -> Result<ReadIter<'a>> {
         let stream = self.get_reader(worker_id)?;
@@ -103,6 +94,15 @@ impl MimReader {
 
         Ok(ReadIter::new(fastx_reader))
     }
+}
+
+pub struct MultiPairParser {
+    pub nworker: usize,
+    pub fpaths: Vec<PathBuf>,
+    pub ipaths: Vec<PathBuf>,
+    /// chunk assignments are with respect to read1 files
+    pub chunk_assignments: Vec<Range<usize>>,
+    pub indexes: Vec<MimIndex>,
 }
 
 impl MultiPairParser {
@@ -211,6 +211,7 @@ mod record_iter {
     use needletail::errors::ParseError;
     use needletail::parser::{FastxReader, SequenceRecord};
 
+    /// An iterator over [`needletail::parser::SequenceRecord`] records.
     pub struct ReadIter<'a> {
         reader: Box<dyn FastxReader + 'a>,
     }

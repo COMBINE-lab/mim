@@ -1,11 +1,11 @@
 //! This file is based on zran C code which as transpiled to Rust by Claude.
 
 use crate::gzip_reader::ZStreamWrapper;
-use crate::mim_types::{
+use crate::record_counter;
+use crate::types::{
     Blake3Hash, DecompressionMode, DeflateCheckPoint, MIMINDEX_FILE_CONSTANT, MimIndex,
     RecordCheckpoint,
 };
-use crate::record_counter;
 //use libz_ng_sys::z_stream;
 //use libz_ng_sys::{self as zlib, Z_OK};
 
@@ -38,12 +38,12 @@ impl MimIndex {
         Self {
             version: 0,
             metadata: Vec::new(),
-            mode: crate::mim_types::DecompressionMode::NONE,
-            plain_size: 0,
+            mode: crate::types::DecompressionMode::NONE,
+            output_size: 0,
             checkpoints: Vec::new(),
             record_boundaries: Vec::new(),
             total_num_records: 0,
-            plain_hash: Blake3Hash::default(),
+            input_hash: Blake3Hash::default(),
         }
     }
 }
@@ -340,7 +340,7 @@ fn deflate_index_build<R: BufRead>(
 
     // Finalize hash
     let hash = hasher.finalize();
-    index.plain_hash.copy_from_slice(hash.as_bytes());
+    index.input_hash.copy_from_slice(hash.as_bytes());
 
     let mut msg = vec![0_u8; 128];
     write!(&mut msg, "BLAKE3 checksum:")?;
@@ -350,13 +350,15 @@ fn deflate_index_build<R: BufRead>(
     info!("{}", str::from_utf8(&msg).expect("valid utf8"));
 
     index.mode = state.file_mode;
-    index.plain_size = state.out_pos;
+    index.output_size = state.out_pos;
 
     Ok(index)
 }
 
-/// Build the `.mim` index for `gzip_file` at either `output_file` or `<gzip_file>.mim`.
-pub fn build_index(
+/// Build the `.mim` index for a `gzip_file`.
+///
+/// The output location defaults to `<gzip_file>.mim`.
+pub fn build_mim_index(
     gzip_file: &Path,
     chunk_size: i64,
     user_metadata: Option<serde_json::Value>,

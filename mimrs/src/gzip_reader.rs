@@ -1,4 +1,5 @@
-use crate::mim_types::{DecompressionMode, MimIndex};
+//! [`GzipStreamReader`] is the main reader from checkpoint to checkpoint.
+use crate::types::{DecompressionMode, MimIndex};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::ops::Range;
@@ -139,7 +140,7 @@ impl Drop for ZStreamWrapper {
     }
 }
 
-/// Reader for streaming decompression from a gzip checkpoint
+/// Gzip reader starting at a checkpoint.
 pub struct GzipStreamReader {
     /// The range of uncompressed output byte that this reader will produce.
     ///

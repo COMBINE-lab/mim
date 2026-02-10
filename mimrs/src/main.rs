@@ -1,9 +1,8 @@
 use clap::{Args, Parser, Subcommand};
 use lender::prelude::*;
 use mim::gzip_reader::GzipStreamReader;
-use mim::indexer;
-use mim::mim_reader::{MimReader, MultiPairParser, ReadIter};
-use mim::mim_types::MimIndex;
+use mim::types::MimIndex;
+use mim::{MimReader, MultiPairParser, ReadIter};
 use std::ffi::CString;
 use std::os::unix::fs::FileExt;
 use std::sync::Arc;
@@ -262,7 +261,7 @@ fn build_index(args: &BuildCommand) -> anyhow::Result<()> {
         .metadata
         .clone()
         .map(|s| serde_json::from_str(&s).expect("metadata must be valid json"));
-    indexer::build_index(
+    mim::build_mim_index(
         &args.fastq_path,
         args.chunk_size as i64,
         user_metadata,
@@ -285,7 +284,7 @@ fn inspect_index(args: &InfoCommand) -> anyhow::Result<()> {
     println!("metadata = {:?}", &metadata_dict);
     println!(
         "blake3 checksum = {}",
-        base16::encode_lower(&index.plain_hash)
+        base16::encode_lower(&index.input_hash)
     );
     println!("number of checkpoints = {}", index.checkpoints.len());
     Ok(())

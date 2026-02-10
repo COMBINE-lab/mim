@@ -4,9 +4,9 @@ use std::{
     thread,
 };
 
-use crate::indexer::{IndexError, build_index};
+use crate::indexer::{IndexError, build_mim_index};
 
-use super::mim_reader::MimReader;
+use super::reader::MimReader;
 
 use paraseq::{
     fastx::{self, GenericReader},
@@ -32,7 +32,7 @@ impl ParallelMimReader {
         let index = path.to_owned().with_added_extension("mim");
 
         if !index.exists() {
-            build_index(path, 32_000_000, None, Some(&index))?;
+            build_mim_index(path, 32_000_000, None, Some(&index))?;
         }
 
         Ok(ParallelMimReader {
