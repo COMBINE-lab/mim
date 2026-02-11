@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand};
 use lender::prelude::*;
 use mim::gzip_reader::GzipStreamReader;
 use mim::types::MimIndex;
-use mim::{MimReader, MultiMimReader, ReadIter};
+use mim::{MimReader, MultiMimReader, ReadIter, default_index_path};
 use std::ffi::CString;
 use std::os::unix::fs::FileExt;
 use std::sync::Arc;
@@ -30,6 +30,9 @@ struct Cli {
 enum Commands {
     /// Build the .mim index.
     Build(BuildCommand),
+
+    /// Check the hash of the .gz input with the one stored in the .mim.
+    Verify(VerifyCommand),
 
     /// Print .mim file metadata.
     Info(InfoCommand),
@@ -70,6 +73,17 @@ struct BuildCommand {
     /// Optional metadata to add. Json-encoded string.
     #[arg(short = 'd', long)]
     pub metadata: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct VerifyCommand {
+    /// Input .fastx.gz file.
+    #[arg(value_name = "FASTX_GZ")]
+    pub fastq_path: PathBuf,
+
+    /// .mim file to write; default <FASTX_GZ>.mim.
+    #[arg(short = 'm', long = "mim")]
+    pub index_path: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -325,6 +339,20 @@ fn build_index(args: &BuildCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn verify_index(args: &VerifyCommand) -> anyhow::Result<()> {
+    let index = MimIndex::read_path(&default_index_path(
+        &args.fastq_path,
+        args.index_path.as_deref(),
+    ))?;
+    let matches = index.verify_hash(&args.fastq_path);
+    if matches {
+        Ok(())
+    } else {
+        eprintln!("Hash does not match!");
+        Err(anyhow::anyhow!("Hash does not match"))
+    }
+}
+
 fn inspect_index(args: &InfoCommand) -> anyhow::Result<()> {
     let index = MimIndex::read_path(&args.index_path)?;
     let metadata_dict: serde_cbor::Value =
@@ -528,6 +556,9 @@ fn main() -> anyhow::Result<()> {
     match cli.commands {
         Commands::Build(ref build_args) => {
             build_index(build_args)?;
+        }
+        Commands::Verify(ref verify_args) => {
+            verify_index(verify_args)?;
         }
         Commands::Info(ref inspect_args) => {
             inspect_index(inspect_args)?;

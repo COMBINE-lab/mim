@@ -128,7 +128,7 @@ fn read_cache(dir: &Path) -> Cache {
 }
 
 pub fn download_mim(gz_path: &Path, socket_path: &Path) -> Option<Vec<u8>> {
-    let hash = mim::hash_gz_file(gz_path);
+    let hash = mim::types::hash_gz_file(gz_path);
 
     let request = Request::Get(hash);
     let response = make_request(request, socket_path);

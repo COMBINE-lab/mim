@@ -358,7 +358,7 @@ pub fn build_mim_index(
     gzip_file: &Path,
     chunk_size: i64,
     user_metadata: Option<serde_json::Value>,
-    output_file: Option<&Path>,
+    index_path: Option<&Path>,
 ) -> Result<(), IndexError> {
     trace!("Opening file: {:?}", gzip_file);
     let file = File::open(gzip_file)?;
@@ -386,10 +386,7 @@ pub fn build_mim_index(
     info!("Got {} records from FASTQ file.", index.total_num_records);
 
     // Save index
-    let output_path = match output_file {
-        Some(path) => path.to_owned(),
-        None => gzip_file.with_added_extension("mim"),
-    };
+    let output_path = super::default_index_path(gzip_file, index_path);
 
     trace!(
         "zran: attempting to write index to {}",

@@ -86,7 +86,7 @@ pub mod types;
 use std::path::Path;
 
 pub use indexer::build_mim_index;
-pub use reader::{MimReader, MultiMimReader, ReadIter, hash_gz_file};
+pub use reader::{MimReader, MultiMimReader, ReadIter};
 
 /// Read the `.mim` file corresponding to the given `.gz` and initialize it for `num_workers`.
 pub fn mim_reader(gz_path: &Path, num_workers: usize) -> MimReader {
@@ -96,4 +96,13 @@ pub fn mim_reader(gz_path: &Path, num_workers: usize) -> MimReader {
 /// Read the given `.mim` file for the `.gz` and initialize it for `num_workers`.
 pub fn mim_reader_with_index(gz_path: &Path, index_path: &Path, num_workers: usize) -> MimReader {
     MimReader::new_with_index(gz_path, index_path, num_workers)
+}
+
+/// Takes an optional index path and either returns it or defaults to `<gzip_file>.mim`.
+pub fn default_index_path(gzip_file: &Path, index_path: Option<&Path>) -> std::path::PathBuf {
+    let output_path = match index_path {
+        Some(path) => path.to_owned(),
+        None => gzip_file.with_added_extension("mim"),
+    };
+    output_path
 }

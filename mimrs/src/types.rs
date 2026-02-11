@@ -1,7 +1,7 @@
 //! Type definitions for the main [`MimIndex`] type.
 use std::{
     fs::File,
-    io::{Error, ErrorKind, Read, Result},
+    io::{BufWriter, Error, ErrorKind, Read, Result},
     ops::Range,
     path::Path,
 };
@@ -142,6 +142,11 @@ impl MimIndex {
             .map_err(|e| Error::new(ErrorKind::InvalidData, e))
     }
 
+    pub fn verify_hash(&self, gz_path: &Path) -> bool {
+        let hash = hash_gz_file(gz_path);
+        hash == self.input_hash
+    }
+
     /// Returns for each worker the range of checkpoints that it will process.
     ///
     /// This balances the number of fastx bytes per worker, rather than just the number of records.
@@ -165,4 +170,19 @@ impl MimIndex {
         }
         ranges
     }
+}
+
+/// Compute the black3 hash of a `.gz` file.
+pub fn hash_gz_file(gz_path: &Path) -> [u8; 32] {
+    debug!("hashing input file");
+    let mut hasher = blake3::Hasher::new();
+    let mut reader = std::fs::File::open(gz_path).expect("could not open gzip file for hashing");
+    std::io::copy(
+        &mut reader,
+        &mut BufWriter::with_capacity(256 * 1024, &mut hasher),
+    )
+    .expect("could not hash gzip file");
+    debug!("hashing done");
+    let hash = *hasher.finalize().as_bytes();
+    hash
 }

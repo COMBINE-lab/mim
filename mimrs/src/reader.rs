@@ -1,10 +1,8 @@
 use crate::gzip_reader::GzipStreamReader;
 use crate::types::MimIndex;
 use anyhow::Result;
-use std::io::BufWriter;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use tracing::debug;
 
 /// Type managing multithreaded parsing of a .gz file with a .mim index.
 // TODO: Parser? Reader?
@@ -41,19 +39,6 @@ impl MimReader {
     /// Create a `MimReader` for the given `.gz` and `.mim` files, and number of worker threads.
     pub fn new_with_index(gz_path: &Path, index_path: &Path, num_workers: usize) -> Self {
         let index = MimIndex::read_path(&index_path).expect("failed to load index");
-
-        // {
-        //     let hash = hash_gz_file(gz_path);
-        //     if hash != index.input_hash {
-        //         panic!(
-        //             "Input file {} hash does not match index hash in {}. Expected {:?}, got {:?}.",
-        //             gz_path.display(),
-        //             index_path.display(),
-        //             index.input_hash,
-        //             hash
-        //         );
-        //     }
-        // }
 
         Self {
             num_workers,
@@ -119,21 +104,6 @@ impl MimReader {
 
         Ok(ReadIter::new(fastx_reader))
     }
-}
-
-/// Compute the black3 hash of a `.gz` file.
-pub fn hash_gz_file(gz_path: &Path) -> [u8; 32] {
-    debug!("hashing input file");
-    let mut hasher = blake3::Hasher::new();
-    let mut reader = std::fs::File::open(gz_path).expect("could not open gzip file for hashing");
-    std::io::copy(
-        &mut reader,
-        &mut BufWriter::with_capacity(256 * 1024, &mut hasher),
-    )
-    .expect("could not hash gzip file");
-    debug!("hashing done");
-    let hash = *hasher.finalize().as_bytes();
-    hash
 }
 
 /// Synchronous multithreaded parsing of multiple files.
