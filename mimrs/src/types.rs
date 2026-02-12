@@ -1,4 +1,4 @@
-//! Type definitions for the main [`MimIndex`] type.
+//! Type definitions and IO for the main [`MimIndex`] type.
 use std::{
     fs::File,
     io::{BufWriter, Error, ErrorKind, Read, Result},

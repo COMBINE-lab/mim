@@ -5,13 +5,11 @@ use mim::types::MimIndex;
 use mim::{MimReader, MultiMimReader, ReadIter, default_index_path};
 use std::ffi::CString;
 use std::os::unix::fs::FileExt;
-use std::sync::Arc;
 use tracing::debug;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 
 use std::io::{BufRead, Read};
 use std::path::PathBuf;
-use std::thread::JoinHandle;
 
 mod server;
 
@@ -243,38 +241,39 @@ fn launch_paired_parser(args: &NucHistCommand) -> anyhow::Result<()> {
 }
 
 fn launch_single_parser(args: &NucHistCommand) -> anyhow::Result<()> {
-    let mp = Arc::new(MimReader::new_with_index(
+    let mp = MimReader::new_with_index(
         &args.fastq_paths[0],
         &args.index_paths.as_deref().expect("valid at this point")[0],
         args.nthreads,
-    ));
+    );
 
     let start = std::time::Instant::now();
 
-    let mut threads = Vec::<JoinHandle<Vec<usize>>>::with_capacity(args.nthreads);
-
-    for t in 0..args.nthreads {
-        let mp = mp.clone();
-        threads.push(std::thread::spawn(move || {
-            let mut wi = mp.get_needletail_parser(t).expect("can get worker");
-            let mut nucs = vec![0_usize; 4];
-            while let Some(rec) = wi.next() {
-                let record = rec.expect("valid record");
-                record.seq().iter().for_each(|c| {
-                    nucs[((*c as usize) >> 1) & 3] += 1;
-                });
-            }
-            nucs
-        }));
-    }
-
     let mut nuc_hist = [0_usize; 4];
-    for t in threads {
-        let loc_nuc = t.join().expect("valid join");
-        for (i, c) in loc_nuc.iter().enumerate() {
-            nuc_hist[i] += c;
+    std::thread::scope(|scope| {
+        let mp = &mp;
+        let mut handles = vec![];
+        for t in 0..args.nthreads {
+            handles.push(scope.spawn(move || {
+                let mut wi = mp.get_needletail_parser(t).expect("can get worker");
+                let mut nucs = [0_usize; 4];
+                while let Some(rec) = wi.next() {
+                    let record = rec.expect("valid record");
+                    record.seq().iter().for_each(|c| {
+                        nucs[((*c as usize) >> 1) & 3] += 1;
+                    });
+                }
+                nucs
+            }));
         }
-    }
+
+        for t in handles {
+            let loc_nuc = t.join().expect("valid join");
+            for (i, c) in loc_nuc.iter().enumerate() {
+                nuc_hist[i] += c;
+            }
+        }
+    });
 
     eprintln!(
         "A: {}, C: {}, G: {}, T (or N): {}",
