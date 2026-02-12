@@ -229,6 +229,18 @@ fn deflate_index_build<R: BufRead>(
                 if at_deflate_stream_end {
                     // If the last loop reached end-of-stream and there is more data, start a new member.
                     handle_gzip_member_boundary(&mut state)?;
+
+                    // Add a free checkpoint.
+                    add_checkpoint(
+                        &mut index,
+                        state.in_pos,
+                        state.out_pos,
+                        state.gzip_member_start,
+                        &state.output_ringbuf,
+                        &state.zstrm.strm,
+                        chunk_size,
+                        num_records as u64,
+                    )?;
                 }
 
                 trace!(
@@ -260,12 +272,11 @@ fn deflate_index_build<R: BufRead>(
                 // }
 
                 let first_record_offset;
-                (num_records, first_record_offset) = record_counter.push_bytes(
-                    &state.output_ringbuf[OUTPUT_BUF_SIZE
-                        - state.zstrm.strm.avail_out as usize
-                        - produced as usize
-                        ..OUTPUT_BUF_SIZE - state.zstrm.strm.avail_out as usize],
-                );
+                let output_range =
+                    OUTPUT_BUF_SIZE - state.zstrm.strm.avail_out as usize - produced as usize
+                        ..OUTPUT_BUF_SIZE - state.zstrm.strm.avail_out as usize;
+                (num_records, first_record_offset) =
+                    record_counter.push_bytes(&state.output_ringbuf[output_range]);
                 if let Some(last) = index.checkpoints.last_mut() {
                     if last.next_record_pos == u64::MAX
                         && let Some(fr) = first_record_offset
@@ -284,20 +295,6 @@ fn deflate_index_build<R: BufRead>(
                 && (index.checkpoints.is_empty()
                     || state.out_pos - state.last_checkpoint_pos >= chunk_size)
             {
-                // If the previous checkpoint does not have a corresponding record start, drop it.
-                if let Some(CheckPoint {
-                    next_record_pos: u64::MAX,
-                    ..
-                }) = index.checkpoints.last_mut()
-                {
-                    debug!(
-                        "Dropping checkpoint {} at out_pos={} with no record start",
-                        index.checkpoints.len(),
-                        state.out_pos
-                    );
-                    index.checkpoints.pop();
-                }
-
                 add_checkpoint(
                     &mut index,
                     state.in_pos,
@@ -349,6 +346,21 @@ fn deflate_index_build<R: BufRead>(
 
     index.mode = state.file_mode;
     index.output_size = state.out_pos;
+
+    // Drop checkpoints without read, and checkpoints within 32MB from the previous one.
+    let mut last_pos = 0;
+    index.checkpoints.retain(|checkpoint| {
+        // No dedicated record follows this checkpoint; drop it.
+        if checkpoint.next_record_pos == u64::MAX {
+            return false;
+        }
+        // Too close to previous checkpoint; drop it.
+        if checkpoint.out_pos < last_pos + chunk_size {
+            return false;
+        }
+        last_pos = checkpoint.out_pos;
+        true
+    });
 
     Ok(index)
 }
