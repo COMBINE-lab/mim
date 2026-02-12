@@ -406,12 +406,30 @@ pub fn build_mim_index(
 /// Write index to a gzipped file.
 fn write_mim_index(path: &Path, index: &MimIndex) -> Result<(), IndexError> {
     let writer = File::create(path)?;
-    let buffered_writer = io::BufWriter::new(writer);
-    // TODO: Use LZ4 instead?
-    let mut gz_writer =
-        flate2::write::GzEncoder::new(buffered_writer, flate2::Compression::default());
-    gz_writer.write_all(MIMINDEX_FILE_CONSTANT)?;
-    bincode::encode_into_std_write(index, &mut gz_writer, bincode::config::legacy())
+    let mut writer = io::BufWriter::new(writer);
+
+    // copy with the gzipped fields zeroed out.
+    let copy = MimIndex {
+        checkpoints: Vec::new(),
+        record_boundaries: Vec::new(),
+        metadata: index.metadata.clone(),
+        ..*index
+    };
+    writer.write_all(MIMINDEX_FILE_CONSTANT)?;
+    bincode::encode_into_std_write(copy, &mut writer, bincode::config::legacy())
         .map_err(|e| IndexError::Compression(format!("Failed to encode index: {}", e)))?;
+    let mut gz_writer = flate2::write::GzEncoder::new(writer, flate2::Compression::default());
+    bincode::encode_into_std_write(
+        &index.checkpoints,
+        &mut gz_writer,
+        bincode::config::legacy(),
+    )
+    .map_err(|e| IndexError::Compression(format!("Failed to encode index: {}", e)))?;
+    bincode::encode_into_std_write(
+        &index.record_boundaries,
+        &mut gz_writer,
+        bincode::config::legacy(),
+    )
+    .map_err(|e| IndexError::Compression(format!("Failed to encode index: {}", e)))?;
     Ok(())
 }

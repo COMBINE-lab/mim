@@ -80,6 +80,42 @@ pub struct MimIndex {
 }
 
 impl MimIndex {
+    /// Decompress and then deserialize a .mim file.
+    pub fn read_path(path: &Path) -> Result<MimIndex> {
+        let reader = File::open(path)?;
+        Self::read_reader(reader)
+    }
+
+    /// Decompress and then deserialize a .mim file.
+    pub fn read_reader(reader: impl std::io::Read) -> Result<MimIndex> {
+        let mut reader = std::io::BufReader::with_capacity(256 * 1024, reader);
+        {
+            // Check file constant.
+            let mut file_signature = [0; 8];
+            reader.read_exact(&mut file_signature)?;
+            if file_signature != *MIMINDEX_FILE_CONSTANT {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "File signature does not match MIMINDEX constant.",
+                ));
+            }
+        }
+        // Here, the checkpoints and record_boundaries arrays are zeroed out.
+        let mut index: MimIndex =
+            bincode::decode_from_std_read(&mut reader, bincode::config::legacy())
+                .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+
+        // Now read the last two fields, which are gzipped.
+        let mut gz_reader = flate2::bufread::GzDecoder::new(reader);
+        index.checkpoints =
+            bincode::decode_from_std_read(&mut gz_reader, bincode::config::legacy())
+                .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+        index.record_boundaries =
+            bincode::decode_from_std_read(&mut gz_reader, bincode::config::legacy())
+                .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+        Ok(index)
+    }
+
     /// Read only the Blake3 hash from a .mim file, without decompressing or deserializing the whole file.
     pub fn read_hash_from_mim_file(path: &Path) -> Result<Blake3Hash> {
         let reader = File::open(path)?;
@@ -89,12 +125,11 @@ impl MimIndex {
     pub fn read_hash_from_std_read(
         reader: impl std::io::Read,
     ) -> std::result::Result<[u8; 32], Error> {
-        let buf_reader = std::io::BufReader::with_capacity(256, reader);
-        let mut gz_reader = flate2::bufread::GzDecoder::new(buf_reader);
+        let mut reader = std::io::BufReader::with_capacity(256, reader);
         {
             // Check file constant.
             let mut file_signature = [0; 8];
-            gz_reader.read_exact(&mut file_signature)?;
+            reader.read_exact(&mut file_signature)?;
             if file_signature != *MIMINDEX_FILE_CONSTANT {
                 return Err(Error::new(
                     ErrorKind::InvalidData,
@@ -104,7 +139,7 @@ impl MimIndex {
         }
         // Skip the version (8 bytes).
         let mut version_buf = [0; 8];
-        gz_reader.read_exact(&mut version_buf)?;
+        reader.read_exact(&mut version_buf)?;
         assert_eq!(
             u64::from_le_bytes(version_buf),
             0,
@@ -112,34 +147,9 @@ impl MimIndex {
         );
         // Read the next 32 bytes for the hash.
         let mut input_hash = [0; 32];
-        gz_reader.read_exact(&mut input_hash)?;
+        reader.read_exact(&mut input_hash)?;
         debug!("Read input hash {:?} from .mim file.", input_hash);
         Ok(input_hash)
-    }
-
-    /// Decompress and then deserialize a .mim file.
-    pub fn read_path(path: &Path) -> Result<MimIndex> {
-        let reader = File::open(path)?;
-        Self::read_reader(reader)
-    }
-
-    /// Decompress and then deserialize a .mim file.
-    pub fn read_reader(reader: impl std::io::Read) -> Result<MimIndex> {
-        let buf_reader = std::io::BufReader::with_capacity(256 * 1024, reader);
-        let mut gz_reader = flate2::bufread::GzDecoder::new(buf_reader);
-        {
-            // Check file constant.
-            let mut file_signature = [0; 8];
-            gz_reader.read_exact(&mut file_signature)?;
-            if file_signature != *MIMINDEX_FILE_CONSTANT {
-                return Err(Error::new(
-                    ErrorKind::InvalidData,
-                    "File signature does not match MIMINDEX constant.",
-                ));
-            }
-        }
-        bincode::decode_from_std_read(&mut gz_reader, bincode::config::legacy())
-            .map_err(|e| Error::new(ErrorKind::InvalidData, e))
     }
 
     pub fn verify_hash(&self, gz_path: &Path) -> bool {
