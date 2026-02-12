@@ -19,7 +19,8 @@ pub type Blake3Hash = [u8; 32];
 /// Contains the preceding 32KiB window to enable decompression, as well as
 /// the exact (byte and bit) offset in the decompressed file that this checkpoints corresponds to.
 #[derive(Clone, bincode::Encode, bincode::Decode)]
-pub struct DeflateCheckPoint {
+pub struct CheckPoint {
+    // Deflate data.
     /// Byte offset in the compressed file where this chunk starts.
     pub in_pos: i64,
     /// Number of spare bits in the compressed stream.
@@ -28,11 +29,8 @@ pub struct DeflateCheckPoint {
     pub out_pos: i64,
     /// The preceding 32KiB (or less) window for deflate state.
     pub window: Vec<u8>,
-}
 
-/// Information for getting the first record after a checkpoint.
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
-pub struct RecordCheckpoint {
+    // Record data.
     /// The 0-based index of the first record starting at or after this checkpoint.
     pub next_record_idx: u64,
     /// The offset in the full uncompressed data where the first record in this chunk starts.
@@ -72,11 +70,9 @@ pub struct MimIndex {
     /// CBOR serialized json string.
     pub metadata: Vec<u8>, // CBOR blob (deserialized)
 
-    /// The decompression checkpoints. Most of the size is here.
-    pub checkpoints: Vec<DeflateCheckPoint>,
-    /// Byte offset and index of first record in each chunk.
+    /// The checkpoints. Most of the size is here.
     /// Also contains a past-the-end entry.
-    pub record_boundaries: Vec<RecordCheckpoint>,
+    pub checkpoints: Vec<CheckPoint>,
 }
 
 impl MimIndex {
@@ -108,9 +104,6 @@ impl MimIndex {
         // Now read the last two fields, which are gzipped.
         let mut gz_reader = flate2::bufread::GzDecoder::new(reader);
         index.checkpoints =
-            bincode::decode_from_std_read(&mut gz_reader, bincode::config::legacy())
-                .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
-        index.record_boundaries =
             bincode::decode_from_std_read(&mut gz_reader, bincode::config::legacy())
                 .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
         Ok(index)
@@ -171,8 +164,8 @@ impl MimIndex {
         for worker_id in 0..num_workers {
             let target_end = target_size * (worker_id + 1);
             let start = i;
-            while i < self.checkpoints.len()
-                && self.record_boundaries[i].next_record_pos < target_end as u64
+            while i < self.checkpoints.len() - 1
+                && self.checkpoints[i].next_record_pos < target_end as u64
             {
                 i += 1;
             }

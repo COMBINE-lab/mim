@@ -188,13 +188,13 @@ impl GzipStreamReader {
         let cp_s = checkpoint_range.start;
         let cp_e = checkpoint_range.end;
 
-        if cp_s >= index.checkpoints.len() as usize {
+        if cp_s + 1 >= index.checkpoints.len() as usize {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Invalid start checkpoint index",
             ));
         }
-        if cp_e >= index.record_boundaries.len() as usize {
+        if cp_e >= index.checkpoints.len() as usize {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Invalid end checkpoint index",
@@ -234,10 +234,10 @@ impl GzipStreamReader {
         }
 
         let mut reader = GzipStreamReader {
-            output_range: index.record_boundaries[cp_s].next_record_pos
-                ..index.record_boundaries[cp_e].next_record_pos,
-            record_idx_range: index.record_boundaries[cp_s].next_record_idx
-                ..index.record_boundaries[cp_e].next_record_idx,
+            output_range: index.checkpoints[cp_s].next_record_pos
+                ..index.checkpoints[cp_e].next_record_pos,
+            record_idx_range: index.checkpoints[cp_s].next_record_idx
+                ..index.checkpoints[cp_e].next_record_idx,
             file,
             zstream,
             out_pos: checkpoint.out_pos as u64,

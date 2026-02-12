@@ -2,10 +2,7 @@
 
 use crate::gzip_reader::ZStreamWrapper;
 use crate::record_counter;
-use crate::types::{
-    Blake3Hash, DecompressionMode, DeflateCheckPoint, MIMINDEX_FILE_CONSTANT, MimIndex,
-    RecordCheckpoint,
-};
+use crate::types::{Blake3Hash, CheckPoint, DecompressionMode, MIMINDEX_FILE_CONSTANT, MimIndex};
 //use libz_ng_sys::z_stream;
 //use libz_ng_sys::{self as zlib, Z_OK};
 
@@ -41,7 +38,6 @@ impl MimIndex {
             mode: crate::types::DecompressionMode::NONE,
             output_size: 0,
             checkpoints: Vec::new(),
-            record_boundaries: Vec::new(),
             total_num_records: 0,
             input_hash: Blake3Hash::default(),
         }
@@ -81,6 +77,7 @@ fn add_checkpoint(
     output_ringbuf: &[u8; OUTPUT_BUF_SIZE],
     strm: &libz_rs_sys::z_stream,
     chunk_size: i64,
+    next_record_idx: u64,
 ) -> Result<(), IndexError> {
     // Context window does not go before the start of the gzip member.
     let window_size = (out_pos - gzip_member_start_pos).min(WINSIZE as i64) as usize;
@@ -100,11 +97,13 @@ fn add_checkpoint(
     }
 
     let bits = (strm.data_type & 7) as u8;
-    index.checkpoints.push(DeflateCheckPoint {
+    index.checkpoints.push(CheckPoint {
         out_pos,
         in_pos,
         bits,
         window,
+        next_record_idx,
+        next_record_pos: u64::MAX,
     });
 
     let idx = index.checkpoints.len() - 1;
@@ -267,7 +266,7 @@ fn deflate_index_build<R: BufRead>(
                         - produced as usize
                         ..OUTPUT_BUF_SIZE - state.zstrm.strm.avail_out as usize],
                 );
-                if let Some(last) = index.record_boundaries.last_mut() {
+                if let Some(last) = index.checkpoints.last_mut() {
                     if last.next_record_pos == u64::MAX
                         && let Some(fr) = first_record_offset
                     {
@@ -286,10 +285,10 @@ fn deflate_index_build<R: BufRead>(
                     || state.out_pos - state.last_checkpoint_pos >= chunk_size)
             {
                 // If the previous checkpoint does not have a corresponding record start, drop it.
-                if let Some(RecordCheckpoint {
+                if let Some(CheckPoint {
                     next_record_pos: u64::MAX,
                     ..
-                }) = index.record_boundaries.last_mut()
+                }) = index.checkpoints.last_mut()
                 {
                     debug!(
                         "Dropping checkpoint {} at out_pos={} with no record start",
@@ -297,7 +296,6 @@ fn deflate_index_build<R: BufRead>(
                         state.out_pos
                     );
                     index.checkpoints.pop();
-                    index.record_boundaries.pop();
                 }
 
                 add_checkpoint(
@@ -308,6 +306,7 @@ fn deflate_index_build<R: BufRead>(
                     &state.output_ringbuf,
                     &state.zstrm.strm,
                     chunk_size,
+                    num_records as u64,
                 )?;
                 debug!(
                     "Added checkpoint at totin={}, totout={}, checkpoint={}",
@@ -316,10 +315,6 @@ fn deflate_index_build<R: BufRead>(
                     index.checkpoints.len()
                 );
                 trace!("Num records in this chunk: {}", num_records);
-                index.record_boundaries.push(RecordCheckpoint {
-                    next_record_idx: num_records as u64,
-                    next_record_pos: u64::MAX,
-                });
                 state.last_checkpoint_pos = state.out_pos;
             }
         }
@@ -327,10 +322,17 @@ fn deflate_index_build<R: BufRead>(
         reader.consume(bytes_processed);
     }
 
-    index.record_boundaries.push(RecordCheckpoint {
-        next_record_idx: num_records as u64,
-        next_record_pos: state.out_pos as u64,
-    });
+    add_checkpoint(
+        &mut index,
+        state.in_pos,
+        state.out_pos,
+        state.gzip_member_start,
+        &state.output_ringbuf,
+        &state.zstrm.strm,
+        chunk_size,
+        num_records as u64,
+    )?;
+    index.checkpoints.last_mut().unwrap().next_record_pos = state.out_pos as u64;
 
     state.zstrm.end()?;
 
@@ -382,7 +384,7 @@ pub fn build_mim_index(
     // Process FASTQ records
     trace!("Getting record boundaries from FASTQ file");
 
-    index.total_num_records = index.record_boundaries.last().unwrap().next_record_idx as _;
+    index.total_num_records = index.checkpoints.last().unwrap().next_record_idx as _;
     info!("Got {} records from FASTQ file.", index.total_num_records);
 
     // Save index
@@ -411,7 +413,6 @@ fn write_mim_index(path: &Path, index: &MimIndex) -> Result<(), IndexError> {
     // copy with the gzipped fields zeroed out.
     let copy = MimIndex {
         checkpoints: Vec::new(),
-        record_boundaries: Vec::new(),
         metadata: index.metadata.clone(),
         ..*index
     };
@@ -421,12 +422,6 @@ fn write_mim_index(path: &Path, index: &MimIndex) -> Result<(), IndexError> {
     let mut gz_writer = flate2::write::GzEncoder::new(writer, flate2::Compression::default());
     bincode::encode_into_std_write(
         &index.checkpoints,
-        &mut gz_writer,
-        bincode::config::legacy(),
-    )
-    .map_err(|e| IndexError::Compression(format!("Failed to encode index: {}", e)))?;
-    bincode::encode_into_std_write(
-        &index.record_boundaries,
         &mut gz_writer,
         bincode::config::legacy(),
     )

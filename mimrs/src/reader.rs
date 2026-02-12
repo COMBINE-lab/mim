@@ -168,11 +168,11 @@ impl MultiMimReader {
                 // Synchronize files.
                 // Fine the last chunk with start <= first_record_rank.
                 let checkpoint = self.indexes[i]
-                    .record_boundaries
+                    .checkpoints
                     .partition_point(|x| x.next_record_idx <= first_record_rank)
                     - 1;
                 // and the record rank starting this chunk
-                let checkpoint_rank = self.indexes[i].record_boundaries[checkpoint].next_record_idx;
+                let checkpoint_rank = self.indexes[i].checkpoints[checkpoint].next_record_idx;
                 let skip = first_record_rank - checkpoint_rank;
 
                 let reader_i = GzipStreamReader::read_from_checkpoint(
