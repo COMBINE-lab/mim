@@ -64,13 +64,13 @@ pub struct MimIndex {
     /// Whether the file is gzip, zlib, or raw DEFLATE.
     pub mode: DecompressionMode,
 
-    /// CBOR serialized json string.
-    pub metadata: Vec<u8>, // CBOR blob (deserialized)
-
     /// Total size in bytes of the decompressed gzip data.
     pub output_size: i64,
     /// Total number of records.
     pub total_num_records: i64,
+
+    /// CBOR serialized json string.
+    pub metadata: Vec<u8>, // CBOR blob (deserialized)
 
     /// The decompression checkpoints. Most of the size is here.
     pub checkpoints: Vec<DeflateCheckPoint>,
