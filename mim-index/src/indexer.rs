@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
-use tracing::{debug, info, trace};
+use tracing::{info, trace};
 
 /// Buffer size for the input file.
 const INPUT_BUF_SIZE: usize = 1024 * 1024;
@@ -214,6 +214,8 @@ fn deflate_index_build<R: BufRead>(
         // Process the input buffer.
         while state.zstrm.strm.avail_in > 0 {
             // In RAW mode, force a checkpoint at the start.
+            // In GZIP mode, Z_BLOCK automatically returns after parsing the header and before the first block.
+            // https://www.zlib.net/manual.html
             if state.file_mode == DecompressionMode::RAW && index.checkpoints.is_empty() {
                 state.zstrm.strm.data_type = 0x80;
             } else {
@@ -225,8 +227,12 @@ fn deflate_index_build<R: BufRead>(
 
                 let (at_deflate_stream_end, consumed, produced) =
                     state.zstrm.inflate(libz_rs_sys::Z_BLOCK)?;
+                trace!("consumed {consumed}  produced {produced}");
 
+                // If we reached the end of a gzip block (after the final checksum),
+                // reset the parser.
                 if at_deflate_stream_end {
+                    trace!("At member end!");
                     // If the last loop reached end-of-stream and there is more data, start a new member.
                     handle_gzip_member_boundary(&mut state)?;
 
@@ -305,7 +311,7 @@ fn deflate_index_build<R: BufRead>(
                     chunk_size,
                     num_records as u64,
                 )?;
-                debug!(
+                trace!(
                     "Added checkpoint at totin={}, totout={}, checkpoint={}",
                     state.in_pos,
                     state.out_pos,

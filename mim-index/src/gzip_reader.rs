@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::path::Path;
-use tracing::trace;
+use tracing::{debug, trace};
 
 /// Buffer size for the input file.
 /// Around L2 cache size and a bit smaller than the 1MB of the indexer,
@@ -32,6 +32,8 @@ impl ZStreamWrapper {
     pub fn init(&mut self, mode: DecompressionMode) -> io::Result<()> {
         assert!(!self.initialized);
 
+        trace!("init {mode:?}");
+
         let ret = unsafe {
             libz_rs_sys::inflateInit2_(
                 &mut self.strm,
@@ -54,6 +56,7 @@ impl ZStreamWrapper {
     /// NOTE: Even though this calls `SetDictionary`, the Huffman dictionary is actually encoded
     /// _inside_ each DEFLATE block, and this "dictionary" rather refers to the 32kiB preceding context.
     pub fn set_context(&mut self, dict: &[u8]) -> io::Result<()> {
+        trace!("inject context");
         let ret = unsafe {
             libz_rs_sys::inflateSetDictionary(&mut self.strm, dict.as_ptr(), dict.len() as u32)
         };
@@ -81,6 +84,7 @@ impl ZStreamWrapper {
 
     /// Reset the stream state.
     pub fn reset(&mut self, mode: DecompressionMode) -> io::Result<()> {
+        trace!("reset");
         let ret = unsafe { libz_rs_sys::inflateReset2(&mut self.strm, mode as i32) };
         if ret != libz_rs_sys::Z_OK {
             return Err(io::Error::new(
@@ -93,7 +97,10 @@ impl ZStreamWrapper {
 
     /// Inflate some data.
     ///
-    /// Returns `(end_of_stream, consumed, produced)` bytes.
+    /// Returns
+    /// - the number of bytes consumed from the compressed input,
+    /// - the number of bytes out decompressed output produced ,
+    /// - and whether the end of a/the gzip stream was reached, which is triggered after parsing the gzip checksum footer.
     pub fn inflate(&mut self, mode: i32) -> io::Result<(bool, usize, usize)> {
         let in_before = self.strm.avail_in as i64;
         let out_before = self.strm.avail_out as i64;
@@ -102,6 +109,7 @@ impl ZStreamWrapper {
         let out_after = self.strm.avail_out as i64;
         let consumed = in_before - in_after;
         let produced = out_before - out_after;
+        trace!("inflate {mode:?}: consumed {consumed} produced {produced} ret {ret}");
 
         if ret != libz_rs_sys::Z_OK && ret != libz_rs_sys::Z_STREAM_END {
             return Err(io::Error::new(
@@ -185,6 +193,7 @@ impl GzipStreamReader {
         index: &MimIndex,
         checkpoint_range: Range<usize>,
     ) -> io::Result<Self> {
+        trace!("Read range {checkpoint_range:?}");
         let cp_s = checkpoint_range.start;
         let cp_e = checkpoint_range.end;
 
@@ -206,6 +215,7 @@ impl GzipStreamReader {
 
         // Get the checkpoint
         let checkpoint = &index.checkpoints[cp_s];
+        trace!("Checkpoint: {checkpoint:?}");
 
         // Seek to the compressed position
         let seek_pos = if checkpoint.bits > 0 {
@@ -215,6 +225,7 @@ impl GzipStreamReader {
         };
 
         // NOTE: We start directly at RAW DEFLATE blocks, and skip any gzip headers.
+        debug!("Seek to {seek_pos}");
         file.seek(SeekFrom::Start(seek_pos as u64))?;
         let mut zstream = ZStreamWrapper::new();
         zstream.init(DecompressionMode::RAW)?;

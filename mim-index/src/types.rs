@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use tracing::debug;
+use tracing::{debug, trace};
 
 /// Magic file signature constant that is written at the start of each .mim file.
 /// <https://en.wikipedia.org/wiki/List_of_file_signatures>
@@ -18,7 +18,7 @@ pub type Blake3Hash = [u8; 32];
 /// Checkpoint storing information about an arbitrary position in a .gz file.
 /// Contains the preceding 32KiB window to enable decompression, as well as
 /// the exact (byte and bit) offset in the decompressed file that this checkpoints corresponds to.
-#[derive(Clone, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
 pub struct CheckPoint {
     // Deflate data.
     /// Byte offset in the compressed file where this chunk starts.
@@ -38,7 +38,7 @@ pub struct CheckPoint {
 }
 
 /// The mode of the file. RAW for DEFLATE stream, or GZIP or ZLIB header.
-#[derive(Default, bincode::Encode, bincode::Decode, PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(Default, Debug, bincode::Encode, bincode::Decode, PartialEq, Eq, Clone, Copy)]
 pub enum DecompressionMode {
     #[default]
     NONE = 0,
@@ -171,6 +171,7 @@ impl MimIndex {
             }
             ranges.push(start..i);
         }
+        trace!("Chunk assignments: {ranges:?}");
         ranges
     }
 }
