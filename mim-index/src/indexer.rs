@@ -189,6 +189,8 @@ fn deflate_index_build<R: BufRead>(
 
     let mut num_records = 0;
 
+    let mut at_start_of_gzip_block = true;
+
     // Loop over the input
     while let input_buf = reader.fill_buf()?
         && input_buf.len() > 0
@@ -236,17 +238,7 @@ fn deflate_index_build<R: BufRead>(
                     // If the last loop reached end-of-stream and there is more data, start a new member.
                     handle_gzip_member_boundary(&mut state)?;
 
-                    // Add a free checkpoint.
-                    add_checkpoint(
-                        &mut index,
-                        state.in_pos,
-                        state.out_pos,
-                        state.gzip_member_start,
-                        &state.output_ringbuf,
-                        &state.zstrm.strm,
-                        chunk_size,
-                        num_records as u64,
-                    )?;
+                    at_start_of_gzip_block = true;
                 }
 
                 trace!(
@@ -293,14 +285,16 @@ fn deflate_index_build<R: BufRead>(
                 }
             }
 
-            // Check if we should add an access point
-            // FIXME: Doesn't this create a checkpoint right after the first read bytes of the file?
-            // FIXME: What does ==0x80 mean? => The end of a gzip block. Is this ever not true?
-            // What are the implications of blocks being 32kB? (are they?)
+            // Check if we should add an access point.
+            // We only create access points at the start or end of DEFLATE blocks (as indicated by the 0x80 check bits),
+            // and never in the middle of one, and also never at the start/end of a gzip block (before the header / after the checksum).
             if (state.zstrm.strm.data_type & 0xc0) == 0x80
-                && (index.checkpoints.is_empty()
+                && (at_start_of_gzip_block
                     || state.out_pos - state.last_checkpoint_pos >= chunk_size)
             {
+                at_start_of_gzip_block = false;
+
+                // Checkpoint at end of deflate block.
                 add_checkpoint(
                     &mut index,
                     state.in_pos,
