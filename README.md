@@ -1,5 +1,20 @@
 # `mim` : A small auxiliary index (and parser) to massively speed up parallel parsing of gzipped FASTQ/A files
 
+Tl;dr: Mim is a small 0.1% overhead index alongside `.fastq.gz` files that allows for
+multithreaded decompression, speeding up analysis pipelines.
+
+``` sh
+# Build and install mim
+cargo install mim-index
+# Build an index file `records.fastq.gz.mim`
+# Takes about as long as decompression on a single thread.
+mim build records.fastq.gz
+# Decompress the file into 8 `.fastq.{0..8}` files in parallel.
+mim unzip records.fastq.gz --parts 8
+# Decompress into 8 named pipes instead, that can be ingested once.
+mim unzip records.fastq.gz --parts 8 --pipe
+```
+
 <img src="https://raw.githubusercontent.com/COMBINE-lab/mim/refs/heads/main/assets/mim.png" width=50% height=50% class="center" alt="Mímir">
 
 Why `mim`? The project's name is a reference to the Norse figure [Mímir](https://en.wikipedia.org/wiki/M%C3%ADmir), who is:
