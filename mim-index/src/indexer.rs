@@ -319,6 +319,22 @@ fn deflate_index_build<R: BufRead>(
         reader.consume(bytes_processed);
     }
 
+    // Drop checkpoints without read, and checkpoints within 32MB from the previous one.
+    let mut last_pos = i64::MIN;
+    index.checkpoints.retain(|checkpoint| {
+        // No dedicated record follows this checkpoint; drop it.
+        if checkpoint.next_record_pos == u64::MAX {
+            return false;
+        }
+        // Too close to previous checkpoint; drop it.
+        if checkpoint.out_pos < last_pos + chunk_size {
+            return false;
+        }
+        last_pos = checkpoint.out_pos;
+        true
+    });
+
+    // One final checkpoint to log the total output size and number of records.
     add_checkpoint(
         &mut index,
         state.in_pos,
@@ -346,21 +362,6 @@ fn deflate_index_build<R: BufRead>(
 
     index.mode = state.file_mode;
     index.output_size = state.out_pos;
-
-    // Drop checkpoints without read, and checkpoints within 32MB from the previous one.
-    let mut last_pos = i64::MIN;
-    index.checkpoints.retain(|checkpoint| {
-        // No dedicated record follows this checkpoint; drop it.
-        if checkpoint.next_record_pos == u64::MAX {
-            return false;
-        }
-        // Too close to previous checkpoint; drop it.
-        if checkpoint.out_pos < last_pos + chunk_size {
-            return false;
-        }
-        last_pos = checkpoint.out_pos;
-        true
-    });
 
     Ok(index)
 }
