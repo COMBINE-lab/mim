@@ -12,169 +12,218 @@ The purpose of `mim` is so that one can create a `mim` index for gzipped FASTQ f
 
 The `mim` index is purely additive (i.e. creating it does not modify or rewrite any part of the original file), small (typically about 1/1000-th the size of the compressed input file), and takes about as much time to make as simply parsing the input.  This makes it easy to create, store, transfer and share `mim` indexes.
 
+Citation:
 
-## The Rust implementation
+> mim: A lightweight auxiliary index to enable fast, parallel, gzipped FASTQ parsing.
+> Rob Patro, Siddhant Bharti, Prajwal Singhania, Rakrish Dhakal, Thomas J. Dahlstrom, Ragnar Groot Koerkamp.
+> https://doi.org/10.1101/2025.11.24.690271
 
-**MSRV**: 1.91. If your Rust version is older than this, please upgrade by running `rustup update`.
 
-### Compiling
+## CLI usage
 
-The Rust implementation can be found under the `mimrs` directory. It is build using `cargo`, and it is recommended to build it with `target-cpu=native`
+Install the `mim` binary using `cargo install mim-index`.
+We require Rust version (MSRV) at least 1.91. If your Rust version is older than this, please upgrade by running `rustup update`.
 
-```
-$ cd mimrs
-$ RUSTFLAGS='-C target-cpu=native' cargo b --release
-```
+The examples below assume an input file `records.fastq.gz`. `.fasta.gz` files
+are also supported.
 
-This will create the `mim` executable with several sub-commands:
+### Overview of subcommands
+- `build`: build the `.mim` index file from a `.fastx.gz`.
+- `unzip`: use the `.mim` index for parallel decompression into parts or pipes.
+- `server`: run a server that stores a content-addressed-storage of `mim` files
+  keyed by hashes of `gz` files.
+- `upload`: upload a `.mim` to a server.
+- `download`: download the `.mim` for a `.gz` from the server.
 
-```
+<details>
+<summary>mim --help</summary>
+
+```text
+Simple program to deal with mim files
+
 Usage: mim <COMMAND>
 
 Commands:
-  inspect   look insize an index
+  build     Build the .mim index
+
+  unzip     Parallel-unzip a .fastx.gz using the .mim index
+
+  info      Print .mim file metadata
   peek      print some reads
   nuc-hist  print some reads
-  build     print some reads
+
+  server    Run the server
+  upload    Upload a mim file
+  download  Download a file
+
   help      Print this message or the help of the given subcommand(s)
+```
+</details>
+
+### Build the index: `mim build`
+Build a `.fastq.gz.mim` index file for a given `.fastq.gz` file.
+
+```sh
+# Write records.fastq.gz.mim:
+mim build records.fastq.gz
+# Write in custom location:
+mim build records.fastq.gz -m /path/to/records.fastq.gz.mim
+# Use a chunk-size of 1GB instead of the default 32MB
+mim build records.fastq.gz --chunck-size 1000000000
+# Add custom json-encoded metadata.
+mim build 
+```
+
+<details>
+<summary>mim build --help</summary>
+
+``` text
+Build the .mim index
+
+Usage: mim build [OPTIONS] <FASTX_GZ>
+
+Arguments:
+  <FASTX_GZ>  Input .fastx.gz file
 
 Options:
-  -h, --help     Print help
-  -V, --version  Print version
+  -m, --mim <INDEX_PATH>         .mim file to write; default <FASTX_GZ>.mim
+  -c, --chunk-size <CHUNK_SIZE>  Distance between checkpoints [default: 32000000]
+  -d, --metadata <METADATA>      Optional metadata to add. Json-encoded string
 ```
+</details>
 
-### Building the `mim` index
 
-The `mim` index for a gzipped FASTA/FASTQ file can be built with the `build` sub-command of `mim`
+### Decompress using the index: `mim unzip`
+Given a `records.fastq.gz` and `.fastq.gz.mim`, unzip using multiple threads into either:
+- the plain `records.fastq`: `mim unzip records.fastq.gz`
+- multiple `records.fastq.<ID>` file parts: `mim unzip records.fastq.gz --parts 8`
+- multiple `records.fastq.<ID>` _named piped_: `mim unzip records.fastq.gz --parts 8 --pipe`
+  This will block until all pipes have been read to completion by some other program.
 
-```
-Usage: mim build [OPTIONS] --fastq-path <FASTQ_PATH>
+<details>
+<summary>mim unzip --help</summary>
+
+``` text
+Parallel-unzip a .fastx.gz using the .mim index
+
+Usage: mim unzip [OPTIONS] <FASTX_GZ>
+
+Arguments:
+  <FASTX_GZ>  Input .fastx.gz file
 
 Options:
-  -f, --fastq-path <FASTQ_PATH>  path to fastx gz input
-  -i, --index-path <INDEX_PATH>  optional output path
-  -s, --span <SPAN>              span [default: 32000000]
-  -m, --metadata <METADATA>      optional metadata
-  -h, --help                     Print help
+  -m, --mim <INDEX_PATH>   .mim file to use; default <FASTX_GZ>.mim
+  -o, --output <OUTPUT>    Output path. .fastx or .fastx.<part_id> by default
+  -p, --parts <PARTS>      The number of .fastx.<part_id> parts to write
+  -j, --threads <THREADS>  Number of threads to use. Defaults to number of cores
+      --pipe               Fork and create a named pipe instead of file for each part. Requires --parts
+```
+</details>
+
+### Unix socket server: `mim server`
+
+The `.mim` index stores a Blake3 hash of the corresponding `.gz` file that is
+verified before decompressing it. This hash is also used to globally identify
+`.gz`. With `mim server`, one can launch a long-running binary that reads all
+`.mim` files in a local directory and serves them over a unix socket, keyed by
+the hash.
+
+Clients can then use `mim upload records.fastq.gz.mim` to upload the `.mim` for a local `.gz` file to
+the server, so that others can later use `mim download records.fastq.gz` to
+download the mim based on the hash of `records.fastq.gz`.
+
+This needs two arguments: the path where it will create a unix socket to listen
+to incoming requests, and the directory where (previously) uploaded `.mim` files
+are hosted.
+
+``` sh
+mim server --socket /tmp/mim-server --dir /mnt/data/mim-files
 ```
 
-For example, to generate an index file using distance between access points of 32 MB
+<details>
+<summary>mim server --help</summary>
 
-```
-./target/release/mim build -f /path/to/compressed-fastq-file 
-```
+``` text
+Run the server
 
-or, if you wanted to embed some useful information in the header
-
-```
-./target/release/mim build -f /path/to/compressed-fastq-file --metadata '{ "sample": "that evil fish", "date" : "Nov. 27" }'
-```
-
-### Using the `mim` index
-
-To parse a file using the generated index, we provide a sample application:
-
-```
-./target/release/mim <fastq_file> <index_file> <nthreads>
-```
-
-Right now, this sample application is only a proof of concept.  It simply counts the number of `A`, `C`, `G` and `T` nucleotides in all of the reads in the file.  However, we've build the `mim`-enabled parser to be generic and easy to reuse, so that developers can easily integrate it into their own applications.  Likewise, we are working on build `mim`-enabled parsers in Rust (and Python) that we hope to share here soon!
-
-### Inspecting a constructed `mim` index
-
-You can use the `inspect` command to inspect an existing `mim` index:
-
-```
-./target/release/mim inspect <index_file> 
-```
-
-## The C++ implementation
-
-### Compiling
-
-The implementation in this repository use the [meson](https://mesonbuild.com/) build system, so you'll need `meson` installed, and [`ninja`](https://ninja-build.org/). Additionally, the current reference implementation is written in `C++`, so you'll need a `C++` compiler (at least capable of `C++17`). The implementation lives under the `cpp` directory, so first, change into that.
-
-```
-cd cpp
-```
-
-Then you can build the executables
-
-
-```
-# Setup build directory
-meson setup builddir
-
-# Or with custom options
-meson setup builddir --buildtype=release -Doptimization=3 -Ddebug=true
-
-# Build all targets
-meson compile -C builddir
-
-# Or use the shorter ninja command
-ninja -C builddir
-
-# Install (installs mimindex and offsets)
-meson install -C builddir
-
-# Clean
-rm -rf builddir
-```
-
-### Building the `mim` index
-
-The `mimindex` executable builds the index. The interface is as below
-
-```
-build subcommand
-Usage: ./builddir/mimindex build [OPTIONS] fastq-path
-
-Positionals:
-  fastq-path TEXT REQUIRED    path to input fastq file.
+Usage: mim server --socket <SOCKET> --dir <DIR>
 
 Options:
-  -h,--help                   Print this help message and exit
-  --span UINT [32000000]      span of uncompressed input bytes between checkpoints.
-  --alt-output TEXT           alternative location to write the mim file (default is input path + ".mim" extension)
-  --metadata TEXT Excludes: --metadata-file
-                              metadata to embed in the header of the index.
-  --metadata-file TEXT:FILE Excludes: --metadata
-                              path to JSON file containing metadata to embed in the header of the index.
+      --socket <SOCKET>  Path to unix socket to listen on
+      --dir <DIR>        The directory containing the .mim files
+```
+</details>
+
+### Upload a binary: `mim upload`
+
+To upload a local `.mim` file, use:
+`mim upload --socket /tmp/mim-server records.fastq.gz.mim`
+
+<details>
+<summary>mim upload --help</summary>
+
+``` text
+Upload a mim file
+
+Usage: mim upload --socket <SOCKET> <MIM>
+
+Arguments:
+  <MIM>  The .mim file to upload
+
+Options:
+      --socket <SOCKET>  Path to unix socket to connect to
+```
+</details>
+
+### Download a binary: `mim download`
+To download a `.mim` file for a local `.gz` file, run:
+`mim download --socket /tmp/mim-server records.fastq.gz`.
+Write it to a custom location using `-m custom/records.fastq.gz`.
+
+<details>
+<summary>mim download --help</summary>
+
+``` text
+Download a file
+
+Usage: mim download [OPTIONS] --socket <SOCKET> <FASTX_GZ>
+
+Arguments:
+  <FASTX_GZ>  The .fastx.gz file to hash and download the .mim for
+
+Options:
+  -m, --mim <INDEX_PATH>  Output location of the .mim. Default <FASTX_GZ>.mim
+      --socket <SOCKET>   Path to unix socket to connect to
+```
+</details>
+
+## API usage
+
+Given an existing `.mim` file, multi-threaded file parsing works by instantiating
+a `MimReader` with the number of workers, and then calling `.readers()` to
+return a reader for each thread. Each reader returns a record-aligned range of byte.
+
+``` rust
+use mim::MimReader;
+let num_workers = 8;
+// Requires `reords.fastq.gz.mim` to exist.
+let reader: MimReader = mim::mim_reader(PathBuf::new("records.fastq.gz"), num_workers);
+std::thread::scope(|s| {
+    for reader in reader.readers() {
+        let reader = reader.unwrap();
+        s.spawn(|| {
+            // Do something with the reader, e.g. read records from it.
+        });
+    }
+});
 ```
 
-For example, to generate an index file using distance between access points of 64,000,000 bytes
+We also provide `MimReader::get_needletail_parser` and
+`MimReader::get_needletail_iter` that directly wrap the reader in a Needletail
+parser and iterator over records.
 
-```
-./builddir/mimindex build /path/to/compressed-fastq-file 
-```
+See <src/lib.rs> or docs.rs for details.
 
-or, if you wanted to embed some useful information in the header
-
-```
-./builddir/mimindex build /path/to/compressed-fastq-file --metadata '{ "sample": "that evil fish", "date" : "Nov. 27" }'
-```
-
-### Using the `mim` index
-
-To parse a file using the generated index, we provide a sample application:
-
-```
-./builddir/test_mim_parser <nthreads> <fastq_file> <index_file> [<fastq_file2>] [<index_file2>]
-```
-
-Right now, this sample application is only a proof of concept.  It simply counts the number of `A`, `C`, `G` and `T` nucleotides in all of the reads in the file.  However, we've build the `mim`-enabled parser to be generic and easy to reuse, so that developers can easily integrate it into their own applications.  Likewise, we are working on build `mim`-enabled parsers in Rust (and Python) that we hope to share here soon!
-
-## About kseq++
-
-The parser upon which our `mim`-enabled parser is built it [`kseq++`](https://github.com/cartoonist/kseqpp).
-
-From the `kseq++` website:
-
-> kseq++ is a C++11 re-implementation of [kseq.h](https://github.com/attractivechaos/klib/blob/master/kseq.h). We have
-extended its functionality to also compute byte offsets from starting of compressed fastq file, for each record, which
-is stored in struct KSeq. 
-
-Additionaly, we have extended its functionality to be able to parse fastq records starting from a specific point in a gzipped file starting at a checkpoint.
 
 #### Note: `mim` started originally as a class project for CMSC701 at the University of Maryland. 
 
