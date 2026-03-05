@@ -1,5 +1,0 @@
-option('build_tests', 
-  type : 'boolean', 
-  value : true, 
-  description : 'Build test executables'
-)
