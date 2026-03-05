@@ -348,7 +348,7 @@ fn deflate_index_build<R: BufRead>(
     index.output_size = state.out_pos;
 
     // Drop checkpoints without read, and checkpoints within 32MB from the previous one.
-    let mut last_pos = 0;
+    let mut last_pos = i64::MIN;
     index.checkpoints.retain(|checkpoint| {
         // No dedicated record follows this checkpoint; drop it.
         if checkpoint.next_record_pos == u64::MAX {
