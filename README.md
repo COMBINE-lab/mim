@@ -15,6 +15,9 @@ mim unzip records.fastq.gz --parts 8
 mim unzip records.fastq.gz --parts 8 --pipe
 ```
 
+*Disclaimer: while the `.mim` index format is stable for now, the CLI needs
+further polishing. Feel free to report issues/suggestions.*
+
 <img src="https://raw.githubusercontent.com/COMBINE-lab/mim/refs/heads/main/assets/mim.png" width=50% height=50% class="center" alt="Mímir">
 
 Why `mim`? The project's name is a reference to the Norse figure [Mímir](https://en.wikipedia.org/wiki/M%C3%ADmir), who is:
