@@ -1,0 +1,101 @@
+* CLI
+all done:
+- =mim build in.fastx.gz [-o out.mim]= writes =in.fastx.gz.mim= or else the given path.
+- =mim unzip in.fastx.gz [-m in.mim] [-o out.fastx]= unzips the gz file using the mim index.
+- =mim unzip in.fastx.gz [-m in.mim] [-o out.fastx] --parts P= writes =out.fastx.<i>= which concatenate into the input file. (other name?)
+- =mim pipes ... & disown= like Noam did for binseq?
+  
+- =mim pipes=: fork for each pipe
+- =mim split=: like =unzip=, but a =.fastq.gz.<part>= each
+- =mim verify=: check that the gz hash the hash as stored in the mim
+
+* API
+- =mim::readers(fastx_gz_path, threads) -> Vec<Reader>=
+- =mim::readers_with_mim(fastx_gz_path, mim_path, threads) -> Vec<Reader>= (in general each fn taking the path has a =_with_mim= variant for when it's not in the default location)
+- =mim::process(fastx_gz_path, paraseq::ParallelProcessor)= maybe also with =batch_size= argument?
+and mirroring the CLI:
+- =mim::index(fastx_gz)=
+- =mim::read(fastx_gz) -> Vec<u8>=
+
+Then also paired variants, returning =Vec<(Reader, Reader)>=.
+
+Also, the user should know the position in the file, so whenever we give a =Reader=, we should actually give =(Reader, State)= where =State { file_pos: usize, record_idx: usize }=.
+
+* Features
+- DONE: remote index of mim files (with auto up/download). Also =mim {upload,download} fastq.gz= commands then.
+
+
+* Crate structure
+- =mim_types= type defs for =MimIndex= and deserialization
+- =indexer::build_index= main fn to build the index
+- =gzip_reader::GzipStreamReader= is the main reader entrypoint
+- =multi_parser= is a helper for multithreading
+- =paraseq_reader= wraps things for paraseq =ParallelProcessor= support.
+
+* Notes
+- state indicator:
+  - low 3 bits: bit offset in compressed stream
+  - 3 bits for bit offset up to 64
+  - 0xf0 bit: end of ~30kB gzip block
+  - 0x80 bit: last block in stream
+- =indexer= calls =inflate= to process 8-byte CRC checksum
+- =gzip_reader= does a bunch of manual processing... 
+
+** Indexer
+#+caption: indexer status on normal file
+#+begin_src 
+...
+STATE:              100 ret 0 consumed 454  produced 1412
+STATE:         10000001 ret 0 consumed 29800  produced 98048
+STATE:         10000101 ret 0 consumed 30260  produced 100845
+STATE:               10 ret 0 consumed 18740  produced 63251
+STATE:         10000110 ret 0 consumed 11650  produced 40574
+STATE:         10000100 ret 0 consumed 30431  produced 102269
+STATE:         10000111 ret 0 consumed 30610  produced 103118
+STATE:          1000110 ret 0 consumed 5010  produced 16183
+STATE:         11000000 ret 0 consumed 13351  produced 45435
+STATE:          1000000 ret 1 consumed 8  produced 0
+#+end_src
+
+#+caption: indexer status on blocked file
+#+begin_src 
+...
+STATE:         10000000 ret 0 consumed 18  produced 0
+STATE:          1000000 ret 0 consumed 18212  produced 56320
+STATE:         11000000 ret 0 consumed 2852  produced 8960
+STATE:          1000000 ret 1 consumed 8  produced 0
+2026-02-08T16:54:45.394660Z TRACE mim::indexer: Z_STREAM_END detected: avail_in=10514, beg=3156157440, totout=3156222720
+2026-02-08T16:54:45.394663Z TRACE mim::indexer: Called inflateReset2, ret=0
+2026-02-08T16:54:45.394666Z TRACE mim::indexer: Reset beg to 3156222720
+STATE:         10000000 ret 0 consumed 18  produced 0
+STATE:         11000111 ret 0 consumed 10460  produced 36983
+2026-02-08T16:54:45.394769Z TRACE mim::indexer: Updated next_record_pos=3156242851
+STATE:          1000000 ret 1 consumed 8  produced 0
+2026-02-08T16:54:45.394789Z TRACE mim::indexer: Z_STREAM_END detected: avail_in=28, beg=3156222720, totout=3156259703
+2026-02-08T16:54:45.394792Z TRACE mim::indexer: Called inflateReset2, ret=0
+2026-02-08T16:54:45.394794Z TRACE mim::indexer: Reset beg to 3156259703
+STATE:         10000000 ret 0 consumed 18  produced 0
+STATE:         11000110 ret 0 consumed 2  produced 0
+STATE:          1000000 ret 1 consumed 8  produced 0
+#+end_src
+
+* Wontfix
+- Wontfix: Something else I was thinking: Instead of splitting a large file into say 16 chunks, we could also create 1MB chunks, and then distribute them to the threads as needed. That way, the entire file can be most read from disk in-order, which might be nicer? Also if you want to have linear output (eg for =sassy grep=), this is nice because internal buffers can be much smaller.
+  This could be done either via =mim::process_linear(path, ParallelProcessor)=, or via =mim::all_readers(path) -> Iter<Reader>= or so.
+- Use =lz4= for mim file? => not faster
+
+* TODO
+- =mim gzip= that multithreads gzipping by using 32MB blocks.
+  - nice to have
+
+- Reorganize repo? => ROB
+
+** Paper
+- =.cbq= benchmark?
+- add a section on cli features
+- extra stress limitations of pugz and rapidgzip
+- server: mention as ongoing work in future work
+- fewer files is OK
+  - can we add what types of files
+  - one blocked
+  - one paired-end

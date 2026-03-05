@@ -1,0 +1,14 @@
+d := "~/git/eth/data"
+build:
+    cargo build -r
+    time ./target/release/mim build {{d}}/legionella.fastq.gz
+    time ./target/release/mim build {{d}}/chm13v2.0.fa.gz
+    
+read:
+    cargo build -r
+    time ./target/release/mim nuc-hist 10 -f {{d}}/legionella.fastq.gz
+    # time ./target/release/mim nuc-hist 2 -f {{d}}/legionella.fastq.gz
+
+read-hg:
+    cargo build -r
+    time ./target/release/mim nuc-hist 2 -f {{d}}/chm13v2.0.fa.gz
