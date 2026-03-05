@@ -14,7 +14,7 @@
 //! let chunk_size = 32 * 1024 * 1024;
 //! // Optional additional metadata to include.
 //! let metadata: Option<serde_json::Value> = None;
-//! mim::build_mim_index(Path::new("records.fastq.gz"), chunk_size, metadata, Some(Path::new("records.fastq.gz.mim")));
+//! mim_index::build_mim_index(Path::new("records.fastq.gz"), chunk_size, metadata, Some(Path::new("records.fastq.gz.mim")));
 //! ```
 //!
 //! ### Using the index
@@ -25,7 +25,7 @@
 //! let gz_path = std::path::Path::new("records.fastq.gz");
 //! let num_workers = 8;
 //! // Requires `records.fastq.gz.mim` to exist.
-//! let mim_reader: &mim::MimReader = &mim::mim_reader(&gz_path, num_workers);
+//! let mim_reader: &mim_index::MimReader = &mim_index::mim_reader(&gz_path, num_workers);
 //!
 //! let total_bytes = std::sync::atomic::AtomicUsize::new(0);
 //! std::thread::scope(|s| {

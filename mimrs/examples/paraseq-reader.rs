@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use clap::Parser;
-use mim::MimReader;
+use mim_index::MimReader;
 use paraseq::parallel::ParallelReader;
 use paraseq::prelude::*;
 use parking_lot::Mutex;

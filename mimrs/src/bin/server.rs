@@ -1,7 +1,7 @@
 //! Server mode for the CLI. Only used in the binary.
 
 use base64::Engine;
-use mim::types::Blake3Hash;
+use mim_index::types::Blake3Hash;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -79,8 +79,9 @@ impl ServerState {
                 }
             }
             Request::Upload(mim_data) => {
-                let hash = mim::types::MimIndex::read_hash_from_std_read(&mim_data[..]).unwrap();
-                let hash2 = mim::types::MimIndex::read_reader(&mim_data[..])
+                let hash =
+                    mim_index::types::MimIndex::read_hash_from_std_read(&mim_data[..]).unwrap();
+                let hash2 = mim_index::types::MimIndex::read_reader(&mim_data[..])
                     .unwrap()
                     .input_hash;
                 debug!("hash:  {:?}\nhash2: {:?}.", hash, hash2);
@@ -128,7 +129,7 @@ fn read_cache(dir: &Path) -> Cache {
 }
 
 pub fn download_mim(gz_path: &Path, socket_path: &Path) -> Option<Vec<u8>> {
-    let hash = mim::types::hash_gz_file(gz_path);
+    let hash = mim_index::types::hash_gz_file(gz_path);
 
     let request = Request::Get(hash);
     let response = make_request(request, socket_path);

@@ -1,8 +1,8 @@
 use clap::{Args, Parser, Subcommand};
 use lender::prelude::*;
-use mim::gzip_reader::GzipStreamReader;
-use mim::types::MimIndex;
-use mim::{MimReader, MultiMimReader, ReadIter, default_index_path};
+use mim_index::gzip_reader::GzipStreamReader;
+use mim_index::types::MimIndex;
+use mim_index::{MimReader, MultiMimReader, ReadIter, default_index_path};
 use std::ffi::CString;
 use std::os::unix::fs::FileExt;
 use tracing::debug;
@@ -329,7 +329,7 @@ fn build_index(args: &BuildCommand) -> anyhow::Result<()> {
         .metadata
         .clone()
         .map(|s| serde_json::from_str(&s).expect("metadata must be valid json"));
-    mim::build_mim_index(
+    mim_index::build_mim_index(
         &args.fastq_path,
         args.chunk_size as i64,
         user_metadata,
