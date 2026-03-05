@@ -11,10 +11,10 @@ readme = "../README.md"
 categories = ["science"]
 rust-version = "1.91"
 
-
 [dependencies]
 anyhow = "1.0.100"
 base16 = "0.2.1"
+base64 = "0.22.1"
 blake3 = "1.8.2"
 clap = { version = "4.5.53", features = ["derive"] }
 flate2 = { version = "1.1.5", features = ["zlib-rs"] }
@@ -35,10 +35,6 @@ ctrlc = "3.5.1"
 
 needletail = { version = "0.6.3", optional = true }
 paraseq = { version = "0.4.3", optional = true }
-base64 = "0.22.1"
-
-[profile.release]
-debug = true
 
 [features]
 # For MimReader::{get_needletail_parser,get_needletail_iter}
