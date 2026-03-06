@@ -18,9 +18,9 @@ base64 = "0.22.1"
 blake3 = "1.8.2"
 clap = { version = "4.5.53", features = ["derive"] }
 flate2 = { version = "1.1.5", features = ["zlib-rs"] }
-lender = "0.4.2"
+lender = "0.6.2"
 libc = { version = "0.2.177", features = ["use_std"] }
-libz-rs-sys = "0.5.3"
+libz-rs-sys = "0.6.3"
 path-tools = "0.1.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_cbor = "0.11"

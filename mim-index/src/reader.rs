@@ -3,7 +3,6 @@ use crate::types::MimIndex;
 use anyhow::Result;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use tracing::trace;
 
 /// Type managing multithreaded parsing of a .gz file with a .mim index.
 // TODO: Parser? Reader?
@@ -216,6 +215,7 @@ mod record_iter {
 
     #[allow(clippy::should_implement_trait)]
     impl<'this> Lender for ReadIter<'this> {
+        check_covariance!();
         fn next(&mut self) -> Option<Lend<'_, Self>> {
             self.reader.next()
         }
