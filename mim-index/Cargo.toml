@@ -1,6 +1,6 @@
 [package]
 name = "mim-index"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Rob Patro", "Ragnar Groot Koerkamp"]
 description = "Small index enabling multithreaded fastq.gz decompression"
