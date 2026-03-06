@@ -5,12 +5,12 @@ name: Test
 
 # When to trigger?
 on:
-  # Run on pushes to master branch
+  # Run on pushes to main branch
   push:
-    branches: ["master"]
-  # Run on PRs to the master branch
+    branches: ["main"]
+  # Run on PRs to the main branch
   pull_request:
-    branches: ["master"]
+    branches: ["main"]
   # Allow manual triggering via GitHub UI
   workflow_dispatch:
 
@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
       # Stable rust is part of the base image,
       # but if nightly is needed, use this:
-      - uses: dtolnay/rust-toolchain@nightly
+      # - uses: dtolnay/rust-toolchain@nightly
       # Caching build artefacts may speed up large builds.
       - uses: Swatinem/rust-cache@v2
       # Run all tests in debug and release mode.
